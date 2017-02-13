@@ -87,11 +87,6 @@ init(_Args) ->
                   permanent, 5000, supervisor,
                   [repl_fsm_sup]},
 
-    StatServer = {stat_server,
-                    {stat_server,  start_link,
-                    []},
-                    permanent, 5000, worker, [stat_server]},
-
     CertSup = {tx_cert_sup,
                     {tx_cert_sup,  start_link, []},
                     permanent, 5000, worker, [tx_cert_sup]},
@@ -101,5 +96,4 @@ init(_Args) ->
      {{one_for_one, 5, 10},
       [VnodeMaster,
        ReplFsmSup,
-       CertSup,
-       StatServer]}}.
+       CertSup]}}.
