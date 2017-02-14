@@ -36,10 +36,10 @@ start(_StartType, _StartArgs) ->
         {ok, Pid} ->
             %case antidote_config:get(do_specula) of
             %    true ->
-                    ok = riak_core:register([{vnode_module, clocksi_vnode}]),
+                    ok = riak_core:register([{vnode_module, master_vnode}]),
                     ok = riak_core_node_watcher:service_up(clocksi, self()),
             %    false ->
-            %        ok = riak_core:register([{vnode_module, clocksi_vnode}]),
+            %        ok = riak_core:register([{vnode_module, master_vnode}]),
             %        ok = riak_core_node_watcher:service_up(clocksi, self())
             %end,
 

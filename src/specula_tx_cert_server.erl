@@ -36,7 +36,7 @@
 -define(READ_INVALID(SEND, CT, TXID), mock_partition_fsm:read_invalid(SEND, CT, TXID)).
 -define(READ_ABORTED(SEND, CT, TXID), mock_partition_fsm:read_aborted(SEND, CT, TXID)).
 -else.
--define(CLOCKSI_VNODE, clocksi_vnode).
+-define(CLOCKSI_VNODE, master_vnode).
 -define(REPL_FSM, repl_fsm).
 -define(SPECULA_TX_CERT_SERVER, specula_tx_cert_server).
 -define(CACHE_SERV, cache_serv).
@@ -123,7 +123,7 @@ init([Name]) ->
             specula_length=SpeculaLength, specula_read=SpeculaRead, rep_dict=RepDict}}.
 
 handle_call({append_values, Node, KeyValues, CommitTime}, Sender, SD0) ->
-    clocksi_vnode:append_values(Node, KeyValues, CommitTime, Sender),
+    master_vnode:append_values(Node, KeyValues, CommitTime, Sender),
     {noreply, SD0};
 
 handle_call({get_pid}, _Sender, SD0) ->

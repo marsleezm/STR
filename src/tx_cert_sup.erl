@@ -170,7 +170,7 @@ clean_data(Sender) ->
     lists:foreach(fun(_) ->  receive cleaned -> ok end  end, DataRepls),
     lager:info("Got reply from all data_repls"),
     S = hash_fun:get_local_servers(),
-    lists:foreach(fun(N) ->  clocksi_vnode:clean_data(N,  MySelf)  end, S),
+    lists:foreach(fun(N) ->  master_vnode:clean_data(N,  MySelf)  end, S),
     lists:foreach(fun(_) ->  receive cleaned -> ok end  end, S),
     lager:info("Got reply from all local_nodes"),
     gen_server:call(node(), {clean_data}),
@@ -215,7 +215,7 @@ read_all() ->
                     data_repl_serv:read_all(N)
                   end, DataRepl),
     lists:foreach(fun(N) -> 
-                    clocksi_vnode:read_all(N)
+                    master_vnode:read_all(N)
                   end, MyParts).
 
 get_size(Sender) ->
@@ -239,7 +239,7 @@ get_size(Sender) ->
     {PS1, CS1, DS1, AllS1} = 
         lists:foldl(fun(N, {S1, S2, S3, S4}) -> 
                         lager:warning("Sending to ~w", [N]),
-                        {DS1, DS2, DS3, DS4} = clocksi_vnode:get_size(N),
+                        {DS1, DS2, DS3, DS4} = master_vnode:get_size(N),
                         lager:warning("Got reply from ~w", [N]),
                         {S1+DS1, S2+DS2, S3+DS3, S4+DS4}
                     end, {PS, CS, DS, AllS}, MyParts),

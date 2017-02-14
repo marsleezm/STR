@@ -17,6 +17,11 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%%
+%% hash_fun: 
+%%  This module generally allows getting the hash function, querying the
+%%  responsible server of keys etc.
+%%
 -module(hash_fun).
 
 -include("antidote.hrl").
@@ -32,7 +37,6 @@
          get_partitions/0,
          build_rev_replicas/0,
          get_local_vnode_by_id/1,
-         get_vnode_by_id/2,
          get_my_previous/2,
          get_logid_from_key/1,
          get_local_servers/0,
@@ -64,28 +68,17 @@ get_preflist_from_key(Key) ->
 %%      vnodes. No matter they are up or down.
 %%      Input:  A hashed key
 %%      Return: The primaries preflist
-%%
 -spec get_primaries_preflist(non_neg_integer()) -> preflist().
 get_primaries_preflist(Key)->
     PartitionList = get_partitions(),
     Pos = Key rem length(PartitionList) + 1,
     [lists:nth(Pos, PartitionList)].
 
+%% @doc get_local_vnode_by_id returns the local partition of the given index (Index) 
+%%      Input: An index. 
+%%      Return: the local partition of the given index. 
 get_local_vnode_by_id(Index) ->
     lists:nth(Index, get_local_servers()).
-
-get_vnode_by_id(Index, NodeIndex) ->
-    lists:nth(Index, get_node_parts(NodeIndex)).
-
--spec get_node_parts(integer()) -> [term()].
-get_node_parts(NodeIndex) ->
-    case ets:lookup(meta_info, NodeIndex) of
-        [{NodeIndex, PartList}] ->
-            %lager:info("NodeIndex is ~w, PartList is ~w", [NodeIndex, PartList]),
-            PartList;
-        [] ->
-            lager:warning("Geting part node.. Something is wrong!!!")
-    end.
 
 -spec get_local_servers() -> [term()].
 get_local_servers() ->

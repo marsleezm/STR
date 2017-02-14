@@ -63,7 +63,7 @@ load(WPerDc) ->
     ets:new(load_info, [named_table, public, set]),
     Part1 = get_partition("COMMIT_TIME", FullPartList, HashLength),
     lager:warning("Part1 is ~w!!!", [Part1]),
-    {ok, COMMIT_TIME} = clocksi_vnode:internal_read(Part1, "COMMIT_TIME", tx_utilities:create_tx_id(0)),
+    {ok, COMMIT_TIME} = master_vnode:internal_read(Part1, "COMMIT_TIME", tx_utilities:create_tx_id(0)),
     %lager:info("Got commit, is ~w", [COMMIT_TIME]),
     ets:insert(load_info, {"COMMIT_TIME", COMMIT_TIME}),
     
@@ -72,7 +72,7 @@ load(WPerDc) ->
         lager:info("Spawning for dc ~w", [Id]),
         Tables = case Server of server -> 
                                     {_, L} = lists:nth(DcId, PartList),
-                                    lists:foldl(fun(P, Acc) ->  Tab = clocksi_vnode:get_table(P), Acc++[Tab] end, [], L);
+                                    lists:foldl(fun(P, Acc) ->  Tab = master_vnode:get_table(P), Acc++[Tab] end, [], L);
                                 {rep, S} -> data_repl_serv:get_table(S)
                 end,
         spawn(tpcc_load, thread_load, [Id, Tables, WPerDc, PartList, NumDcs, self()]) end, ToPopulateParts),
@@ -260,13 +260,13 @@ init_params(FullPartList, HashLength) ->
     lager:info("Putting CCID to ~w", [Partition2]),
     lager:info("Putting COLIID to ~w", [Partition3]),
     lager:info("Putting COMMIT_TIME to ~w", [Partition4]),
-    {ok, _} = clocksi_vnode:append_values(Partition1, [{K1, C_C_LAST}], COMMIT_TIME, self()),
+    {ok, _} = master_vnode:append_values(Partition1, [{K1, C_C_LAST}], COMMIT_TIME, self()),
     %lager:info("Finish putting CCLAST to ~w", [Partition1]),
-    clocksi_vnode:append_values(Partition2, [{K2, C_C_ID}], COMMIT_TIME, self()),
+    master_vnode:append_values(Partition2, [{K2, C_C_ID}], COMMIT_TIME, self()),
     %lager:info("Finish putting CCID to ~w", [Partition2]),
-    clocksi_vnode:append_values(Partition3, [{K3, C_OL_I_ID}], COMMIT_TIME, self()),
+    master_vnode:append_values(Partition3, [{K3, C_OL_I_ID}], COMMIT_TIME, self()),
     %lager:info("Finish putting COLIID to ~w", [Partition3]),
-    clocksi_vnode:append_values(Partition4, [{K4, COMMIT_TIME}], COMMIT_TIME, self()).
+    master_vnode:append_values(Partition4, [{K4, COMMIT_TIME}], COMMIT_TIME, self()).
     %lager:info("Finish putting COMMIT_TIME to ~w", [Partition4]).
 
 get_partition(Key, PartList, HashLength) ->
@@ -303,7 +303,7 @@ put_to_node(Tabs, _DcId, _PartList, Key, Value) ->
 %    %lager:info("Single Puting [~p, ~p] to ~w", [Key, Value, Part]),
 %    case TxServer of
 %        server ->
-%            {ok, _} = clocksi_vnode:append_values(Part, KeyValues, CommitTime, self());
+%            {ok, _} = master_vnode:append_values(Part, KeyValues, CommitTime, self());
 %        {rep, S} ->
 %            ok = data_repl_serv:append_values(S, KeyValues, CommitTime)
 %    end.

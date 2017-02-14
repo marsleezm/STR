@@ -64,7 +64,7 @@ load(_) ->
     case DcId of 1 ->
             CT = tpcc_tool:now_nsec() - 100000,
             P1 = get_partition("COMMIT_TIME", FullPartList, HashLength),
-            clocksi_vnode:append_values(P1, [{"COMMIT_TIME", CT}], CT, self()),
+            master_vnode:append_values(P1, [{"COMMIT_TIME", CT}], CT, self()),
             timer:sleep(500);
         _ ->
             timer:sleep(3000)
@@ -72,7 +72,7 @@ load(_) ->
 
     %% Add commit time 
     Part1 = get_partition("COMMIT_TIME", FullPartList, HashLength),
-    {ok, COMMIT_TIME} = clocksi_vnode:internal_read(Part1, "COMMIT_TIME", tx_utilities:create_tx_id(0)),
+    {ok, COMMIT_TIME} = master_vnode:internal_read(Part1, "COMMIT_TIME", tx_utilities:create_tx_id(0)),
     %lager:info("Got commit, is ~w", [COMMIT_TIME]),
     ets:insert(load_info, {"COMMIT_TIME", COMMIT_TIME}),
 
@@ -82,14 +82,14 @@ load(_) ->
     ToPopulateParts = [{DcId, server}|MyReps],
     lager:info("Populating categories/regions for node ~w", [MyNode]),
     {_, L} = lists:nth(DcId, PartList),
-    MyTables = lists:foldl(fun(P, Acc) ->  Tab = clocksi_vnode:get_table(P), Acc++[Tab] end, [], L),
+    MyTables = lists:foldl(fun(P, Acc) ->  Tab = master_vnode:get_table(P), Acc++[Tab] end, [], L),
     populate_commons(MyTables, MyNode, PartList, ToPopulateParts),
     lists:foreach(fun({Id, Server}) -> 
         lager:info("Spawning for dc ~w", [Id]),
         Tables = case Server of 
                             server -> 
                                     {_, L} = lists:nth(DcId, PartList),
-                                    lists:foldl(fun(P, Acc) ->  Tab = clocksi_vnode:get_table(P), Acc++[Tab] end, [], L);
+                                    lists:foldl(fun(P, Acc) ->  Tab = master_vnode:get_table(P), Acc++[Tab] end, [], L);
                             {rep, S} -> data_repl_serv:get_table(S)
                  end,
         spawn(rubis_load, thread_load, [Id, Tables, PartList, self()]) end, ToPopulateParts),
@@ -393,7 +393,7 @@ put_to_node(Tabs, _DcId, _PartList, Key, Value) ->
 %    %lager:info("Single Puting [~p, ~p] to ~w", [Key, Value, Part]),
 %    case TxServer of
 %        server ->
-%            {ok, _} = clocksi_vnode:append_values(Part, KeyValues, CommitTime, self());
+%            {ok, _} = master_vnode:append_values(Part, KeyValues, CommitTime, self());
 %        {rep, S} ->
 %            ok = data_repl_serv:append_values(S, KeyValues, CommitTime)
 %    end.

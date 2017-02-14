@@ -107,7 +107,7 @@ handle_call({get_stat}, _Sender, SD0) ->
     {reply, [0, 0, 0, 0, 0, 0, 0], SD0};
 
 handle_call({append_values, Node, KeyValues, CommitTime}, Sender, SD0) ->
-    clocksi_vnode:append_values(Node, KeyValues, CommitTime, Sender),
+    master_vnode:append_values(Node, KeyValues, CommitTime, Sender),
     {noreply, SD0};
 
 handle_call({get_pid}, _Sender, SD0) ->
@@ -134,7 +134,7 @@ handle_call({start_read_tx}, _Sender, SD0) ->
 
 handle_call({read, Key, TxId, Node}, Sender, SD0) ->
    %lager:warning("Trying to relay read ~w for key ~w", [TxId, Key]),
-    clocksi_vnode:relay_read(Node, Key, TxId, Sender, false),
+    master_vnode:relay_read(Node, Key, TxId, Sender, false),
     {noreply, SD0};
 
 handle_call({certify_read, TxId, 0},  Sender, SD0) ->
@@ -154,7 +154,7 @@ handle_call({certify, TxId, LocalUpdates, RemoteUpdates, _, _},  Sender, SD0=#st
                     {noreply, SD0};
                 _ -> 
                     RemoteParts = [P || {P, _} <- RemoteUpdates],
-                    clocksi_vnode:prepare(RemoteUpdates, TxId, {remote,ignore}),
+                    master_vnode:prepare(RemoteUpdates, TxId, {remote,ignore}),
                     %Now = os:timestamp(),
                     ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=length(RemoteUpdates)*TotalReplFactor, local_parts=[], remote_parts=RemoteParts,
                                     sender=Sender, stage=remote_cert},
@@ -164,7 +164,7 @@ handle_call({certify, TxId, LocalUpdates, RemoteUpdates, _, _},  Sender, SD0=#st
         N ->
             LocalParts = [Part || {Part, _} <- LocalUpdates],
             %Now = os:timestamp(),
-            clocksi_vnode:prepare(LocalUpdates, TxId, local),
+            master_vnode:prepare(LocalUpdates, TxId, local),
             ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=N, pending_to_ack=N*(TotalReplFactor-1), local_parts=LocalParts, remote_parts=RemoteUpdates,
                                     sender=Sender, stage=local_cert},
             {noreply, SD0#state{client_dict=dict:store(Client, ClientState1, ClientDict)}}
@@ -212,7 +212,7 @@ handle_cast({prepared, TxId, PrepareTime},
                             case PN of
                                 0 ->
                                     CommitTime = max(PrepareTime, OldPrepTime),
-                                    clocksi_vnode:commit(LocalParts, TxId, CommitTime),
+                                    master_vnode:commit(LocalParts, TxId, CommitTime),
                                     repl_fsm:repl_commit(LocalParts, TxId, CommitTime, RepDict),
                                    %lager:warning("~w committed", [TxId]),
                                     gen_server:reply(Sender, {ok, {committed, CommitTime, {[],[],[]}}}),
@@ -230,7 +230,7 @@ handle_cast({prepared, TxId, PrepareTime},
                             end;
                         L ->
                             MaxPrepTime = max(PrepareTime, OldPrepTime),
-                            clocksi_vnode:prepare(RemoteUpdates, TxId, {remote,ignore}),
+                            master_vnode:prepare(RemoteUpdates, TxId, {remote,ignore}),
                             ClientState1 = ClientState#client_state{prepare_time=MaxPrepTime, to_ack=L*TotalReplFactor+PN, pending_to_ack=0, 
                                     remote_parts=RemoteParts, stage=remote_cert},
                             ClientDict1 = dict:store(Client, ClientState1, ClientDict),
@@ -250,9 +250,9 @@ handle_cast({prepared, TxId, PrepareTime},
             case N of
                 1 ->
                     CommitTime = max(OldPrepTime, PrepareTime),
-                    clocksi_vnode:commit(LocalParts, TxId, CommitTime),
+                    master_vnode:commit(LocalParts, TxId, CommitTime),
                     %% Remote updates should be just partitions here
-                    clocksi_vnode:commit(RemoteUpdates, TxId, CommitTime),
+                    master_vnode:commit(RemoteUpdates, TxId, CommitTime),
                     repl_fsm:repl_commit(LocalParts, TxId, CommitTime, RepDict),
                     repl_fsm:repl_commit(RemoteUpdates, TxId, CommitTime, RepDict),
                    %lager:warning("~w committed", [TxId]),
@@ -290,7 +290,7 @@ handle_cast({aborted, TxId, FromNode}, SD0=#state{client_dict=ClientDict, rep_di
     case {MyTxId, Stage} of
         {TxId, local_cert} ->
             LocalParts1 = lists:delete(FromNode, LocalParts), 
-            clocksi_vnode:abort(LocalParts1, TxId),
+            master_vnode:abort(LocalParts1, TxId),
             repl_fsm:repl_abort(LocalParts1, TxId, RepDict),
             gen_server:reply(Sender, {aborted, {[],[],[]}}),
             ClientState1 = ClientState#client_state{tx_id={}},
@@ -298,8 +298,8 @@ handle_cast({aborted, TxId, FromNode}, SD0=#state{client_dict=ClientDict, rep_di
             {noreply, SD0#state{client_dict=ClientDict1}};
         {TxId, remote_cert} ->
             RemoteParts1 = lists:delete(FromNode, RemoteParts),
-            clocksi_vnode:abort(LocalParts, TxId),
-            clocksi_vnode:abort(RemoteParts1, TxId),
+            master_vnode:abort(LocalParts, TxId),
+            master_vnode:abort(RemoteParts1, TxId),
             repl_fsm:repl_abort(LocalParts, TxId, RepDict),
             repl_fsm:repl_abort(RemoteParts1, TxId, RepDict),
             gen_server:reply(Sender, {aborted, {[],[],[]}}),

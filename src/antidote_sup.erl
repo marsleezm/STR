@@ -78,8 +78,8 @@ init(_Args) ->
                   %          permanent, 5000, supervisor, [clockSI_general_tx_coord_sup]}
           end,
 
-    VnodeMaster = { clocksi_vnode_master,
-                        {riak_core_vnode_master, start_link, [clocksi_vnode]},
+    VnodeMaster = { master_vnode_master,
+                        {riak_core_vnode_master, start_link, [master_vnode]},
                         permanent, 5000, worker, [riak_core_vnode_master]}, 
     
     ReplFsmSup = {repl_fsm_sup,

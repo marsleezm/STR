@@ -33,7 +33,7 @@
 -define(READ_VALID(SEND, RTXID, WTXID), mock_partition_fsm:read_valid(SEND, RTXID, WTXID)).
 -define(READ_INVALID(SEND, CT, TXID), mock_partition_fsm:read_invalid(SEND, CT, TXID)).
 -else.
--define(CLOCKSI_VNODE, clocksi_vnode).
+-define(CLOCKSI_VNODE, master_vnode).
 -define(REPL_FSM, repl_fsm).
 -define(SPECULA_TX_CERT_SERVER, specula_tx_cert_server).
 -define(CACHE_SERV, cache_serv).

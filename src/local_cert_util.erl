@@ -217,7 +217,7 @@ update_store([Key|Rest], TxId, TxCommitTime, InMemoryStore, CommittedTxs, Prepar
                                 true -> gen_server:reply(Sender, {ok, Value});
                                 false ->
                                     {_, RealKey} = Key,
-                                    clocksi_vnode:remote_read(Node, RealKey, ReaderTxId, Sender)
+                                    master_vnode:remote_read(Node, RealKey, ReaderTxId, Sender)
                             end end, AllPendingReaders);
                 _ ->
                     Values = case ets:lookup(InMemoryStore, Key) of
@@ -278,7 +278,7 @@ clean_abort_prepared(PreparedTxs, [Key | Rest], TxId, InMemoryStore, DepDict, Pa
                         cache -> 
                             lists:foreach(fun({ReaderTxId, Node, Sender}) -> 
                                     {_, RealKey} = Key,
-                                    clocksi_vnode:remote_read(Node, RealKey, ReaderTxId, Sender) end,
+                                    master_vnode:remote_read(Node, RealKey, ReaderTxId, Sender) end,
                                       PendingReaders);
                         _ ->
                             {TS, RValue} = case ets:lookup(InMemoryStore, Key) of
@@ -328,11 +328,11 @@ deal_pending_records([{Type, TxId, PPTime, _Value, PendingReaders}|PWaiter]=List
                             {ok, {_, _, _, Sender, _Type, _WriteSet}} ->
                                 %lager:warning("Prepare not valid anymore! For ~p, abort to ~p, Type is ~w", [TxId, Sender, Type]),
                                 gen_server:cast(Sender, {aborted, TxId, MyNode}),
-                                case PartitionType of master -> clocksi_vnode:abort([MyNode], TxId); _ -> ok end,
+                                case PartitionType of master -> master_vnode:abort([MyNode], TxId); _ -> ok end,
                                 dict:erase(TxId, DepDict);
                             {ok, {_, _, _, Sender, local}} ->
                                 gen_server:cast(Sender, {aborted, TxId}),
-                                case PartitionType of master -> clocksi_vnode:abort([MyNode], TxId); _ -> ok end,
+                                case PartitionType of master -> master_vnode:abort([MyNode], TxId); _ -> ok end,
                                 dict:erase(TxId, DepDict);
                             error ->
                                 DepDict
@@ -808,7 +808,7 @@ multi_read_version(_Key, List, [], _) ->
 multi_read_version({_, RealKey}, [], SenderInfos, ignore) -> %% In cache 
     lists:foreach(fun({ReaderTxId, Node, Sender}) ->
             %lager:warning("Send read of ~w from ~w to ~w", [RealKey, ReaderTxId, Sender]),
-            clocksi_vnode:remote_read(Node, RealKey, ReaderTxId, Sender)
+            master_vnode:remote_read(Node, RealKey, ReaderTxId, Sender)
                   end, SenderInfos),
     [];
 multi_read_version(Key, [], SenderInfos, InMemoryStore) -> 
