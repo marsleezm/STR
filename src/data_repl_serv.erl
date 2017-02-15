@@ -299,7 +299,7 @@ handle_cast({local_certify, TxId, Partition, WriteSet, Sender},
             {noreply, SD0}
     end;
 
-%% @doc: pre-commit this tranaction by convering the state of its prepared records to local-commit state and
+%% @doc: local commit this tranaction by convering the state of its prepared records to local-commit state and
 %% adding local-commit timestamp.
 handle_cast({local_commit, TxId, Partition, SpeculaCommitTime, LOC, FFC}, State=#state{prepared_txs=PreparedTxs,
         inmemory_store=InMemoryStore, dep_dict=DepDict}) ->
@@ -312,7 +312,7 @@ handle_cast({local_commit, TxId, Partition, SpeculaCommitTime, LOC, FFC}, State=
             lager:error("Prepared record of ~w, ~w has disappeared!", [TxId, Partition]),
             error
     end;
-
+%% @doc: clean all data of this transaction.
 handle_cast({clean_data, Sender}, SD0=#state{inmemory_store=InMemoryStore, prepared_txs=PreparedTxs,
             committed_txs=CommittedTxs}) ->
     ets:delete_all_objects(PreparedTxs),
@@ -322,37 +322,27 @@ handle_cast({clean_data, Sender}, SD0=#state{inmemory_store=InMemoryStore, prepa
     {noreply, SD0#state{prepared_txs = PreparedTxs, current_dict = dict:new(), backup_dict = dict:new(), 
                 table_size=0, inmemory_store = InMemoryStore, committed_txs=CommittedTxs}};
 
-handle_cast({repl_prepare, Type, TxId, Part, WriteSet, TimeStamp, Sender}, 
-	    SD0=#state{prepared_txs=PreparedTxs, inmemory_store=InMemoryStore, current_dict=CurrentDict, backup_dict=BackupDict}) ->
-    case Type of
-        prepared ->
-            case dict:find(TxId, CurrentDict) of
+%% @doc: receive (synchronous) replicated prepare message of a transaction from the master replica.
+%% The slave replica inserts this prepare records into its version chain and proposes a prepare timestamp
+%% to the transaction coordinator.
+handle_cast({repl_prepare, _Type, TxId, Part, WriteSet, TimeStamp, Sender}, 
+	    SD0=#state{prepared_txs=PreparedTxs, current_dict=CurrentDict, backup_dict=BackupDict}) ->
+    _Type = prepared,
+    case dict:find(TxId, CurrentDict) of
+        {ok, finished} ->
+            {noreply, SD0};
+        error ->
+            case dict:find(TxId, BackupDict) of
                 {ok, finished} ->
                     {noreply, SD0};
                 error ->
-                    case dict:find(TxId, BackupDict) of
-                        {ok, finished} ->
-                            {noreply, SD0};
-                        error ->
-                            local_cert_util:insert_prepare(PreparedTxs, TxId, Part, WriteSet, TimeStamp, Sender),
-                            {noreply, SD0}
-                    end
-            end;
-        single_commit ->
-            AppendFun = fun({Key, Value}) ->
-                case ets:lookup(InMemoryStore, Key) of
-                    [] ->
-                         %lager:warning("Data repl inserting ~p, ~p of ~w to table", [Key, Value, TimeStamp]),
-                        true = ets:insert(InMemoryStore, {Key, [{TimeStamp, Value}]});
-                    [{Key, ValueList}] ->
-                        {RemainList, _} = lists:split(min(?NUM_VERSIONS,length(ValueList)), ValueList),
-                        true = ets:insert(InMemoryStore, {Key, [{TimeStamp, Value}|RemainList]})
-                end end,
-            lists:foreach(AppendFun, WriteSet),
-            gen_server:cast({global, Sender}, {ack, Part, TxId}), 
-            {noreply, SD0}
+                    local_cert_util:insert_prepare(PreparedTxs, TxId, Part, WriteSet, TimeStamp, Sender),
+                    {noreply, SD0}
+            end
     end;
 
+%% @doc: receive commit message for a transaction. All transactions that have read from this transaction will be 
+%% notified.
 handle_cast({repl_commit, TxId, LOC, CommitTime, Partitions}, 
 	    SD0=#state{inmemory_store=InMemoryStore, prepared_txs=PreparedTxs, specula_read=SpeculaRead, committed_txs=CommittedTxs,
         dep_dict=DepDict}) ->
@@ -370,6 +360,8 @@ handle_cast({repl_commit, TxId, LOC, CommitTime, Partitions},
     end,
     {noreply, SD0#state{dep_dict=DepDict1}};
 
+%% @doc: receive abort message for a transaction. All transactions that have read from this transaction will be 
+%% notified to abort.
 handle_cast({repl_abort, TxId, Partitions}, SD0=#state{prepared_txs=PreparedTxs, inmemory_store=InMemoryStore, 
     specula_read=SpeculaRead, current_dict=CurrentDict, dep_dict=DepDict, set_size=SetSize, table_size=TableSize}) ->
    %lager:warning("repl abort for ~w ~w", [TxId, Partitions]),

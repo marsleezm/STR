@@ -22,10 +22,16 @@
 -include("include/speculation.hrl").
 -include("include/antidote.hrl").
 
--export([prepare_for_master_part/5, ready_or_block/4, prepare_for_other_part/7, update_store/9, clean_abort_prepared/7, 
-            local_commit/10, specula_read/4, insert_prepare/6, read_value/4, remote_read_value/4]).
-
--define(SPECULA_THRESHOLD, 0).
+-export([prepare_for_master_part/5, 
+        ready_or_block/4, 
+        prepare_for_other_part/7, 
+        update_store/9, 
+        clean_abort_prepared/7, 
+        local_commit/10, 
+        insert_prepare/6, 
+        specula_read/4, 
+        read_value/4, 
+        remote_read_value/4]).
 
 prepare_for_master_part(TxId, TxWriteSet, CommittedTxs, PreparedTxs, InitPrepTime)->
     KeySet = [K || {K, _} <- TxWriteSet],

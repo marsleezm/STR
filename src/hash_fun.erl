@@ -18,7 +18,7 @@
 %%
 %% -------------------------------------------------------------------
 %% @doc A file that allows querying the hash function of the system
-%%      and the responsible node for a specific key. 
+%% and the responsible node for a specific key. 
 %%
 -module(hash_fun).
 
@@ -47,10 +47,8 @@
 %% @doc get_logid_from_key computes the log identifier from a key
 %%      Input:  Key:    The key from which the log id is going to be computed
 %%      Return: Log id
-%%
 -spec get_logid_from_key(key()) -> log_id().
 get_logid_from_key(Key) ->
-    %HashedKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
     PreflistAnn = get_preflist_from_key(Key),
     remove_node_from_preflist(PreflistAnn).
 
@@ -59,7 +57,6 @@ get_logid_from_key(Key) ->
 -spec get_preflist_from_key(key()) -> preflist().
 get_preflist_from_key(Key) ->
     ConvertedKey = convert_key(Key),
-    %HashedKey = riak_core_util:chash_key({?BUCKET, term_to_binary(Key)}),
     get_primaries_preflist(ConvertedKey).
 
 %% @doc get_primaries_preflist returns the preflist with the primary

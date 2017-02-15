@@ -14,6 +14,9 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc: A helper class that implements some functions for debugging or
+%% statistical functions.
+
 -module(helper).
 
 -include("antidote.hrl").
@@ -41,8 +44,6 @@
         handle_command_check_prepared_empty/1,
         handle_check_top_aborted/1
         ]).
-
-
 
 relay_read_stat(Node) ->
     riak_core_vnode_master:sync_command(Node,

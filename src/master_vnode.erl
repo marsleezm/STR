@@ -41,7 +41,6 @@
         prepare/3,
         prepare/4,
         commit/4,
-        single_commit/2,
         append_value/5,
         append_values/4,
         abort/2,
@@ -195,14 +194,6 @@ debug_prepare(Updates, TxId, Type, Sender) ->
                                Sender,
 						       ?CLOCKSI_MASTER)
 		end, Updates).
-
-%% @doc Sends prepare+commit to a single partition
-%%      Called by a Tx coordinator when the tx only
-%%      affects one partition
-single_commit(Node, WriteSet) ->
-    riak_core_vnode_master:sync_command(Node,
-                                   {single_commit, WriteSet},
-                                   ?CLOCKSI_MASTER, infinity).
 
 append_value(Node, Key, Value, CommitTime, ToReply) ->
     riak_core_vnode_master:command(Node,
