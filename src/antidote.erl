@@ -17,6 +17,8 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc Public APIs.
+
 -module(antidote).
 
 -include("antidote.hrl").
@@ -82,12 +84,7 @@ prepare(ThreadId, TxId, LocalUpdates, RemoteUpdates) ->
     tx_cert_sup:certify(ThreadId, TxId, LocalUpdates, RemoteUpdates).
 
 single_commit(Node, Key, Value) ->
-    %case ets:lookup(meta_info, do_specula) of
-    %    [{_, true}] ->
-    %        master_vnode:single_commit([{Node, [{Key, Value}]}]);
-    %    [{_, false}] ->
-            master_vnode:single_commit([{Node, [{Key, Value}]}]),
-    %end,
+    master_vnode:single_commit([{Node, [{Key, Value}]}]),
     receive
         EndOfTx ->
             EndOfTx
@@ -95,14 +92,8 @@ single_commit(Node, Key, Value) ->
 
 -spec read(Node::preflist(), Key::key(), TxId::txid()) -> {ok, val()} | {error, reason()}.
 read(Node, Key, TxId) ->
-    %case ets:lookup(meta_info, do_specula) of
-    %    [{_, true}] ->
-    %        master_vnode:read_data_item(Node, Key, TxId);
-    %    [{_, false}] ->
-            master_vnode:internal_read(Node, Key, TxId).
-    %end.
+    master_vnode:internal_read(Node, Key, TxId).
 
-%% Clock SI API
 
 %% @doc Starts a new ClockSI transaction.
 %%      Input:
@@ -143,11 +134,12 @@ execute_g_tx(Operations) ->
             EndOfTx
     end.
 
+%% Deprecated APIs.
+
 %% @doc Starts a new ClockSI interactive transaction.
 %%      Input:
 %%      ClientClock: last clock the client has seen from a successful transaction.
 %%      Returns: an ok message along with the new TxId.
-%%
 -spec clocksi_istart_tx(Clock:: snapshot_time()) -> term().
 clocksi_istart_tx(Clock) ->
     {ok, _} = clocksi_interactive_tx_coord_sup:start_fsm([self(), Clock]),

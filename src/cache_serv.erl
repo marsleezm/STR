@@ -17,7 +17,12 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-%% TODO: should implement heart-beat for timestamp.
+%% @doc The cache partition that temporarily stores the updates of 
+%%      local committed transactions to non-local keys. These updates
+%%      are visible to other local transactions and are removed when
+%%      its transaction commits or aborts. The registered name of each 
+%%      node's cache is the name of it's erlang node. 
+
 -module(cache_serv).
 
 -behavior(gen_server).
@@ -27,12 +32,20 @@
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
-
 -define(NUM_VERSIONS, 10).
-%% API
--export([start_link/1]).
 
--define(CLOCKSI_VNODE, clocksi_vnode).
+%% API
+-export([start_link/1,
+        prepare_specula/4,
+        commit/4,
+        pre_commit/5,
+        abort/2,
+        if_prepared/2,
+        num_specula_read/0,
+        local_certify/3,
+        read/4,
+        read/2,
+        read/3]).
 
 %% Callbacks
 -export([init/1,
@@ -45,27 +58,10 @@
         terminate/2]).
 
 %% States
--export([
-        prepare_specula/4,
-        commit/4,
-        pre_commit/5,
-        abort/2,
-        if_prepared/2,
-        num_specula_read/0,
-        local_certify/3,
-        read/4,
-        read/2,
-        read/3]).
-
-%% Spawn
-
 -record(state, {
         prepared_txs :: cache_id(),
         dep_dict :: dict(),
-        delay :: non_neg_integer(),
         specula_read :: boolean(),
-        num_specula_read :: non_neg_integer(),
-        num_attempt_read :: non_neg_integer(),
 		self :: atom()}).
 
 %%%===================================================================
@@ -115,18 +111,17 @@ init([]) ->
     PreparedTxs = tx_utilities:open_private_table(prepared_txs),
     SpeculaRead = antidote_config:get(specula_read),
     {ok, #state{specula_read = SpeculaRead, dep_dict=dict:new(),
-                prepared_txs = PreparedTxs, num_specula_read=0, num_attempt_read=0}}.
+                prepared_txs = PreparedTxs}}.
 
-handle_call({num_specula_read}, _Sender, 
-	    SD0=#state{num_specula_read=NumSpeculaRead, num_attempt_read=NumAttemptRead}) ->
-    {reply, {NumSpeculaRead, NumAttemptRead}, SD0};
+handle_call({num_specula_read}, _Sender, SD0) ->
+    {reply, {0, 0}, SD0};
 
 handle_call({get_pid}, _Sender, SD0) ->
         {reply, self(), SD0};
 
 handle_call({clean_data}, _Sender, SD0=#state{prepared_txs=PreparedTxs}) ->
     ets:delete_all_objects(PreparedTxs),
-    {reply, ok, SD0#state{num_specula_read=0, num_attempt_read=0}};
+    {reply, ok, SD0};
 
 handle_call({read, Key, TxId, _Node}, Sender, SD0=#state{specula_read=SpeculaRead}) ->
     handle_call({read, Key, TxId, _Node, SpeculaRead}, Sender, SD0);
@@ -134,7 +129,7 @@ handle_call({read, Key, TxId, {Partition, _}=Node, SpeculaRead}, Sender,
         SD0=#state{prepared_txs=PreparedTxs}) ->
     case SpeculaRead of
         false ->
-            ?CLOCKSI_VNODE:remote_read(Node, Key, TxId, Sender),
+            master_vnode:remote_read(Node, Key, TxId, Sender),
             {noreply, SD0};
         true ->
            %lager:warning("Cache specula read ~w of ~w from ~w", [Key, TxId, Sender]), 
@@ -150,7 +145,7 @@ handle_call({read, Key, TxId, {Partition, _}=Node, SpeculaRead}, Sender,
                     {reply, {ok, Value}, SD0};
                 ready ->
                    %lager:warning("~w remote read!"),
-                    ?CLOCKSI_VNODE:remote_read(Node, Key, TxId, Sender),
+                    master_vnode:remote_read(Node, Key, TxId, Sender),
                     {noreply, SD0}
             end
     end;
@@ -166,7 +161,6 @@ handle_call({read, Key, TxId}, _Sender,
                 {SpeculaTxId, Value} ->
                     ets:insert(dependency, {SpeculaTxId, TxId}),
                     %lager:info("Inserting anti_dep from ~w to ~w for ~p", [TxId, SpeculaTxId, Key]),
-                    %% To make sure this is never triggered
                     TxId = SpeculaTxId,
                     {reply, {ok, Value}, SD0};
                 [] ->
@@ -206,7 +200,6 @@ handle_cast({local_certify, TxId, Partition, WriteSet, Sender},
     Result = local_cert_util:prepare_for_other_part(TxId, Partition, WriteSet, ignore, PreparedTxs, TxId#tx_id.snapshot_time, cache),
     case Result of
         {ok, PrepareTime} ->
-            %UsedTime = tx_utilities:now_microsec() - PrepareTime,
             %lager:warning("~w: ~w certification check prepred with ~w", [Partition, TxId, PrepareTime]),
             gen_server:cast(Sender, {prepared, TxId, PrepareTime, {node(), self()}}),
             {noreply, SD0};
@@ -234,8 +227,6 @@ handle_cast({pre_commit, TxId, Partition, SpeculaCommitTime, LOC, FFC}, State=#s
             error
     end;
 
-%% Where shall I put the speculative version?
-%% In ets, faster for read.
 handle_cast({abort, TxId, Partitions}, 
 	    SD0=#state{prepared_txs=PreparedTxs, dep_dict=DepDict}) ->
    %lager:warning("Abort ~w in cache", [TxId]),

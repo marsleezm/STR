@@ -17,10 +17,8 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
-%%
-%% hash_fun: 
-%%  This module generally allows getting the hash function, querying the
-%%  responsible server of keys etc.
+%% @doc A file that allows querying the hash function of the system
+%%      and the responsible node for a specific key. 
 %%
 -module(hash_fun).
 

@@ -17,6 +17,13 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc The transaction coordinator for non-speculative transactions.
+%%      A transaction coordinator is a long-lived process. It receives
+%%      client requrests to start a transaction, and then after
+%%      transaction execution, it receives transaction's write-set and
+%%      coordinates transaction's 2PC. The coordinator can simultaneously
+%%      coordinate for multiple transactions. 
+
 -module(i_tx_cert_server).
 
 -behavior(gen_server).
@@ -41,7 +48,6 @@
         terminate/2]).
 
 %% States
-
 -record(state, {partition :: non_neg_integer(),
         name :: atom(),
         rep_dict :: dict(),
@@ -76,28 +82,12 @@ start_link(Name) ->
 
 init([Name]) ->
     RepDict = hash_fun:build_rep_dict(true),
-    %PendingMetadata = tx_utilities:open_private_table(pending_metadata),
     [{_, Replicas}] = ets:lookup(meta_info, node()),
     TotalReplFactor = length(Replicas)+1,
-    %Cdf = case antidote_config:get(cdf, false) of
-    %            true -> [];
-    %            _ -> false
-    %        end,
-    {ok, #state{do_repl=antidote_config:get(do_repl), name=Name, total_repl_factor=TotalReplFactor, last_commit_ts=0, rep_dict=RepDict, client_dict=dict:new()}}.
+    {ok, #state{do_repl=antidote_config:get(do_repl), name=Name, total_repl_factor=TotalReplFactor, 
+        last_commit_ts=0, rep_dict=RepDict, client_dict=dict:new()}}.
 
 handle_call({get_cdf}, _Sender, SD0) ->
-    %case Cdf of false -> ok;
-    %            _ ->
-    %                case Cdf of [] -> ok;
-    %                            _ ->
-    %                                FinalFileName = atom_to_list(Name) ++ "final-latency",
-    %                                {ok, FinalFile} = file:open(FinalFileName, [raw, binary, write]),
-    %                                lists:foreach(fun(Lat) -> file:write(FinalFile,  io_lib:format("~w\n", [Lat]))
-    %                                              end, Cdf),
-    %                                file:close(FinalFile)
-    %                end
-    %end,
-    %{reply, ok, SD0};
     {reply, ok, SD0};
 
 handle_call({get_hitcounter}, _Sender, SD0) ->
@@ -155,18 +145,15 @@ handle_call({certify, TxId, LocalUpdates, RemoteUpdates, _, _},  Sender, SD0=#st
                 _ -> 
                     RemoteParts = [P || {P, _} <- RemoteUpdates],
                     master_vnode:prepare(RemoteUpdates, TxId, {remote,ignore}),
-                    %Now = os:timestamp(),
-                    ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=length(RemoteUpdates)*TotalReplFactor, local_parts=[], remote_parts=RemoteParts,
-                                    sender=Sender, stage=remote_cert},
-                    %{noreply, SD0#state{tx_id=TxId, pend_txn_start=Now, to_ack=length(RemoteUpdates)*TotalReplFactor, local_parts=[], remote_parts=RemoteParts, sender=Sender, stage=remote_cert}}
+                    ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=length(RemoteUpdates)*TotalReplFactor, 
+                            local_parts=[], remote_parts=RemoteParts, sender=Sender, stage=remote_cert},
                     {noreply, SD0#state{client_dict=dict:store(Client, ClientState1, ClientDict)}}
             end;
         N ->
             LocalParts = [Part || {Part, _} <- LocalUpdates],
-            %Now = os:timestamp(),
             master_vnode:prepare(LocalUpdates, TxId, local),
-            ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=N, pending_to_ack=N*(TotalReplFactor-1), local_parts=LocalParts, remote_parts=RemoteUpdates,
-                                    sender=Sender, stage=local_cert},
+            ClientState1 = ClientState#client_state{tx_id=TxId, to_ack=N, pending_to_ack=N*(TotalReplFactor-1), 
+                local_parts=LocalParts, remote_parts=RemoteUpdates, sender=Sender, stage=local_cert},
             {noreply, SD0#state{client_dict=dict:store(Client, ClientState1, ClientDict)}}
     end;
 
@@ -216,10 +203,6 @@ handle_cast({prepared, TxId, PrepareTime},
                                     repl_fsm:repl_commit(LocalParts, TxId, CommitTime, RepDict),
                                    %lager:warning("~w committed", [TxId]),
                                     gen_server:reply(Sender, {ok, {committed, CommitTime, {[],[],[]}}}),
-                                    %ets:insert(Cdf, {TxId, get_time_diff(PendStart, os:timestamp())}),
-                                    %Cdf1 =  case Cdf of false -> false;
-                                    %            _ -> [get_time_diff(PendStart, os:timestamp())]
-                                    %        end, 
                                     ClientState1 = ClientState#client_state{tx_id={}, prepare_time=CommitTime},
                                     ClientDict1 = dict:store(Client, ClientState1, ClientDict),
                                     {noreply, SD0#state{last_commit_ts=CommitTime, client_dict=ClientDict1}};
@@ -243,8 +226,6 @@ handle_cast({prepared, TxId, PrepareTime},
                     ClientDict1 = dict:store(Client, ClientState1, ClientDict),
                     {noreply, SD0#state{client_dict=ClientDict1}}
             end;
-%handle_cast({prepared, TxId, PrepareTime}, 
-%	    SD0=#state{remote_parts=RemoteParts, sender=Sender, tx_id=TxId, rep_dict=RepDict, prepare_time=MaxPrepTime, to_ack=N, cdf=Cdf, local_parts=LocalParts, stage=remote_cert}) ->
         {MyTxId, remote_cert} ->
            %lager:warning("Remote cert for ~w", [MyTxId]),
             case N of
@@ -257,11 +238,6 @@ handle_cast({prepared, TxId, PrepareTime},
                     repl_fsm:repl_commit(RemoteUpdates, TxId, CommitTime, RepDict),
                    %lager:warning("~w committed", [TxId]),
                     gen_server:reply(Sender, {ok, {committed, CommitTime, {[],[],[]}}}),
-                    %ets:insert(Cdf, {TxId, get_time_diff(PendStart, os:timestamp())}),
-                    %Cdf1 = case Cdf of false -> false;
-                    %            _ -> [get_time_diff(PendStart, os:timestamp())|Cdf]
-                    %end,
-                    %ets:insert(Cdf, {TxId, [os:timestamp()|PendStart]}),
                     ClientState1 = ClientState#client_state{prepare_time=CommitTime, tx_id={}},
                     ClientDict1 = dict:store(Client, ClientState1, ClientDict),
                     {noreply, SD0#state{last_commit_ts=CommitTime, client_dict=ClientDict1}};
@@ -273,10 +249,6 @@ handle_cast({prepared, TxId, PrepareTime},
         _ ->
             {noreply, SD0}
     end;
-%handle_cast({prepared, _OtherTxId, _}, 
-%	    SD0=#state{stage=local_cert}) ->
-%      %lager:info("Received prepare of previous prepared txn! ~w", [OtherTxId]),
-%    {noreply, SD0};
 
 handle_cast({aborted, TxId, FromNode}, SD0=#state{client_dict=ClientDict, rep_dict=RepDict}) ->
    %lager:warning("Receive aborted for txn ~w", [TxId]),
