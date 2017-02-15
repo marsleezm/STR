@@ -654,7 +654,7 @@ handle_cast({pending_prepared, TxId, PrepareTime},
                         true ->
                              %lager:warning("Pending prep: decided to wait and prepare ~w, pending list is ~w!!", [TxId, PendingList]),
                             ?MASTER_VNODE:prepare(RemoteUpdates, TxId, {remote, node()}),
-                            pre_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
+                            local_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
                             DepDict1 = dict:store(TxId, {PendingPrepares+1, ReadDepTxs, LOC, NewMaxPrep}, DepDict),
                             ClientDict1 = dict:store(Client, ClientState#c_state{stage=remote_cert, remote_updates=RemoteParts}, ClientDict),
                             {noreply, SD0#state{dep_dict=DepDict1, client_dict=ClientDict1}};
@@ -664,7 +664,7 @@ handle_cast({pending_prepared, TxId, PrepareTime},
                             CommittedReads = ClientState#c_state.committed_reads,
                             CommittedUpdates = ClientState#c_state.committed_updates,
                             PendingTxs1 = dict:store(TxId, {LocalParts, RemoteParts}, PendingTxs),
-                            pre_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
+                            local_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
                             ?MASTER_VNODE:prepare(RemoteUpdates, NewMaxPrep, TxId, {remote, node()}),
                             %lager:warning("Returning specula_commit for ~w, time is ~w", [TxId, os:timestamp()]),
                             gen_server:reply(Sender, {ok, {specula_commit, NewMaxPrep, {AbortedReads,
@@ -759,7 +759,7 @@ handle_cast({prepared, TxId, PrepareTime, _From},
                                 true -> 
                                     %%In wait stage, only prepare and doesn't add data to table
                                      %lager:warning("Decided to wait and prepare ~w, pending list is ~w, sending to ~w!!", [TxId, PendingList, RemoteParts]),
-                                    pre_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
+                                    local_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
                                     ?MASTER_VNODE:prepare(RemoteUpdates, TxId, {remote, node()}),
                                     DepDict1 = dict:store(TxId, {PendingPrepares, ReadDepTxs, LOC, NewMaxPrep}, DepDict),
                                     ClientDict1 = dict:store(Client, ClientState#c_state{stage=remote_cert, 
@@ -768,7 +768,7 @@ handle_cast({prepared, TxId, PrepareTime, _From},
                                 false ->
                                     %% Add dependent data into the table
                                     PendingTxs1 = dict:store(TxId, {LocalParts, RemoteParts}, PendingTxs),
-                                    pre_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
+                                    local_commit(LocalParts, RemoteParts, TxId, NewMaxPrep, RepDict, LOC, FFC),
                                     ?MASTER_VNODE:prepare(RemoteUpdates, NewMaxPrep, TxId, {remote, node()}),
                                    %lager:warning("Returning specula_commit for ~w, time is ~w", [TxId, os:timestamp()]),
                                     gen_server:reply(Sender, {ok, {specula_commit, NewMaxPrep, {rev(AbortedRead), rev(CommittedUpdated), CommittedReads}}}),
@@ -846,7 +846,7 @@ handle_cast({read_valid, PendingTxId, PendedTxId, PendedLOC}, SD0=#state{dep_dic
         {ok, {PrepDeps, ReadDepTxs, LOC, OldPrepTime}} ->  %% Still certifying, but not sure if local_cert or remote_cert
            %lager:warning("Can not commit... Remaining prepdep is ~w, read dep is ~w, LOC is ~w", [PrepDeps, delete_elem(PendedTxId, ReadDepTxs), LOC]),
             case is_list(LOC) of
-                true -> %% Before pre_commit
+                true -> %% Before local_commit
                     {noreply, SD0#state{dep_dict=dict:store(PendingTxId, {PrepDeps, delete_elem(PendedTxId, ReadDepTxs), [PendedLOC|LOC], 
                         OldPrepTime}, DepDict)}};
                 false ->
@@ -1321,14 +1321,14 @@ local_certify(LocalUpdates, RemoteUpdates, TxId, RepDict) ->
                     end end, {0, 0}, RemoteUpdates),
     {LocalParts, NumLocalParts, NumSlaveParts, NumCacheParts}.
 
-pre_commit(LocalPartitions, RemotePartitions, TxId, SpeculaCommitTs, RepDict, LOC, FFC) ->
-    ?MASTER_VNODE:pre_commit(LocalPartitions, TxId, SpeculaCommitTs, LOC, FFC),
+local_commit(LocalPartitions, RemotePartitions, TxId, SpeculaCommitTs, RepDict, LOC, FFC) ->
+    ?MASTER_VNODE:local_commit(LocalPartitions, TxId, SpeculaCommitTs, LOC, FFC),
     lists:foreach(fun({Part, Node}) ->
             case dict:find({rep, Node}, RepDict) of
                 {ok, DataReplServ} ->
-                    ?DATA_REPL_SERV:pre_commit(DataReplServ, TxId, Part, SpeculaCommitTs, LOC, FFC); 
+                    ?DATA_REPL_SERV:local_commit(DataReplServ, TxId, Part, SpeculaCommitTs, LOC, FFC); 
                 _ ->
-                    ?CACHE_SERV:pre_commit(TxId, Part, SpeculaCommitTs, LOC, FFC)
+                    ?CACHE_SERV:local_commit(TxId, Part, SpeculaCommitTs, LOC, FFC)
     end end, RemotePartitions).
 
 %% Deal dependencies and check if any following transactions can be committed.

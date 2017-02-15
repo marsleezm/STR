@@ -102,27 +102,6 @@ abort_pending_prep(TxId, Partition) ->
 check_table() ->
     gen_server:call(repl_fsm, {check_table}).
 
-
-%repl_abort(UpdatedParts, TxId, DoRepl) ->
-%    repl_abort(UpdatedParts, TxId, DoRepl, false). 
-
-%repl_abort(_, _, false) ->
-%    ok;
-%repl_abort([], _, true) ->
-%    ok;
-%repl_abort(UpdatedParts, TxId, true) ->
-%    gen_server:cast({global, get_repl_name()}, {repl_abort, TxId, UpdatedParts}).
-
-%repl_commit(UpdatedParts, TxId, CommitTime, DoRepl) ->
-%    repl_commit(UpdatedParts, TxId, CommitTime, DoRepl). 
-
-%repl_commit(_, _, _, false) ->
-%    ok;
-%repl_commit([], _, _, true) ->
-%    ok;
-%repl_commit(UpdatedParts, TxId, CommitTime, true) ->
-%    gen_server:cast({global, get_repl_name()}, {repl_commit, TxId, UpdatedParts, CommitTime}).
-
 quorum_replicate(Replicas, Type, TxId, Partition, WriteSet, TimeStamp, Sender) ->
    %lager:warning("~w of part ~w send to ~w", [TxId, Partition, Replicas]),
     lists:foreach(fun(Replica) ->

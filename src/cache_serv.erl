@@ -18,10 +18,15 @@
 %%
 %% -------------------------------------------------------------------
 %% @doc The cache partition that temporarily stores the updates of 
-%%      local committed transactions to non-local keys. These updates
-%%      are visible to other local transactions and are removed when
-%%      its transaction commits or aborts. The registered name of each 
-%%      node's cache is the name of it's erlang node. 
+%% local committed transactions to non-local keys. These updates
+%% are visible to other local transactions and are removed when its 
+%% transaction commits or aborts. When a transaction reads non-local keys,
+%% it first goes to the local cache partition to see if there exists any
+%% versions created by previous local committed transactions. If not, 
+%% the read request is then forwarding to any replica of the corresponding
+%% partition.
+%%
+%% The registered name of each node's cache is the name of it's erlang node. 
 
 -module(cache_serv).
 
@@ -36,9 +41,8 @@
 
 %% API
 -export([start_link/1,
-        prepare_specula/4,
         commit/4,
-        pre_commit/5,
+        local_commit/5,
         abort/2,
         if_prepared/2,
         num_specula_read/0,
@@ -87,9 +91,6 @@ num_specula_read() ->
 if_prepared(TxId, Keys) ->
     gen_server:call(node(), {if_prepared, TxId, Keys}).
 
-prepare_specula(TxId, Partition, WriteSet, PrepareTime) ->
-    gen_server:cast(node(), {prepare_specula, TxId, Partition, WriteSet, PrepareTime}).
-
 abort(TxId, Partition) -> 
     gen_server:cast(node(), {abort, TxId, Partition}).
 
@@ -99,8 +100,8 @@ commit(TxId, Partition, LOC, CommitTime) ->
 local_certify(TxId, Partition, WriteSet) ->
     gen_server:cast(node(), {local_certify, TxId, Partition, WriteSet, self()}).
 
-pre_commit(TxId, Partition, SpeculaCommitTs, LOC, FFC) ->
-    gen_server:cast(node(), {pre_commit, TxId, Partition, SpeculaCommitTs, LOC, FFC}).
+local_commit(TxId, Partition, SpeculaCommitTs, LOC, FFC) ->
+    gen_server:cast(node(), {local_commit, TxId, Partition, SpeculaCommitTs, LOC, FFC}).
 
 %%%===================================================================
 %%% Internal
@@ -175,25 +176,7 @@ handle_call({if_prepared, TxId, Keys}, _Sender, SD0=#state{prepared_txs=Prepared
 handle_call({go_down},_Sender,SD0) ->
     {stop,shutdown,ok,SD0}.
 
-handle_cast({prepare_specula, TxId, Partition, WriteSet, TimeStamp}, 
-	    SD0=#state{prepared_txs=PreparedTxs}) ->
-    KeySet = lists:foldl(fun({Key, Value}, KS) ->
-                    PartKey = {Partition, Key},
-                    case ets:lookup(PreparedTxs, PartKey) of
-                        [] ->
-                            %% Putting TxId in the record to mark the transaction as speculative 
-                            %% and for dependency tracking that will happen later
-                            true = ets:insert(PreparedTxs, {PartKey, [{TimeStamp, Value, TxId}]}),
-                            [Key|KS];
-                        [{PartKey, ValueList}] ->
-                            {RemainList, _} = lists:split(min(?NUM_VERSIONS,length(ValueList)), ValueList),
-                            true = ets:insert(PreparedTxs, {PartKey, [{TimeStamp, Value, TxId}|RemainList]}),
-                            [Key|KS]
-                    end end, [], WriteSet),
-    ets:insert(PreparedTxs, {{TxId, Partition}, KeySet}),
-    {noreply, SD0};
-
-%% Need to certify here
+%% @doc: performs local certification. 
 handle_cast({local_certify, TxId, Partition, WriteSet, Sender},
         SD0=#state{prepared_txs=PreparedTxs, dep_dict=DepDict}) ->
    %lager:warning("cache server local certify for [~w, ~w]", [TxId, Partition]),
@@ -215,18 +198,21 @@ handle_cast({local_certify, TxId, Partition, WriteSet, Sender},
             {noreply, SD0}
     end;
 
-handle_cast({pre_commit, TxId, Partition, SpeculaCommitTime, LOC, FFC}, State=#state{prepared_txs=PreparedTxs,
+%% @doc: per-commit this transaction, by applying its updates in the local storage.
+handle_cast({local_commit, TxId, Partition, SpeculaCommitTime, LOC, FFC}, State=#state{prepared_txs=PreparedTxs,
         dep_dict=DepDict}) ->
    %lager:warning("specula commit for [~w, ~w]", [TxId, Partition]),
     case ets:lookup(PreparedTxs, {TxId, Partition}) of
         [{{TxId, Partition}, Keys}] ->
-            DepDict1 = local_cert_util:pre_commit(Keys, TxId, SpeculaCommitTime, ignore, PreparedTxs, DepDict, Partition, LOC, FFC, cache),
+            DepDict1 = local_cert_util:local_commit(Keys, TxId, SpeculaCommitTime, ignore, PreparedTxs, DepDict, Partition, LOC, FFC, cache),
             {noreply, State#state{dep_dict=DepDict1}};
         [] ->
             lager:error("Prepared record of ~w has disappeared!", [TxId]),
             error
     end;
 
+%% @doc: abort a transaction by removing its updates. Notify all 
+%% transactions data-depend on it to abort. 
 handle_cast({abort, TxId, Partitions}, 
 	    SD0=#state{prepared_txs=PreparedTxs, dep_dict=DepDict}) ->
    %lager:warning("Abort ~w in cache", [TxId]),
@@ -240,6 +226,8 @@ handle_cast({abort, TxId, Partitions},
     specula_utilities:deal_abort_deps(TxId),
     {noreply, SD0#state{dep_dict=DepDict1}};
     
+%% @doc: commit this transaction, but all updates should also be cleaned. 
+%% Notify all transactions that have read from it.
 handle_cast({commit, TxId, Partitions, LOC, CommitTime}, 
 	    SD0=#state{prepared_txs=PreparedTxs, dep_dict=DepDict}) ->
    %lager:warning("Commit ~w in cache", [TxId]),
@@ -254,6 +242,7 @@ handle_cast({commit, TxId, Partitions, LOC, CommitTime},
             end end, DepDict, Partitions),
     specula_utilities:deal_commit_deps(TxId, LOC, CommitTime),
     {noreply, SD0#state{dep_dict=DepDict1}};
+
 
 handle_cast(_Info, StateData) ->
     {noreply,StateData}.

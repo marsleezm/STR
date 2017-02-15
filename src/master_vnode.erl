@@ -34,7 +34,7 @@
         clean_data/2,
         async_send_msg/3,
 
-        pre_commit/5,
+        local_commit/5,
         set_debug/2,
         do_reply/2,
         debug_prepare/4,
@@ -180,10 +180,10 @@ prepare(Updates, CollectedTS, TxId, Type) ->
 						       ?CLOCKSI_MASTER)
 		end, Updates).
 
-pre_commit(Partitions, TxId, SpeculaCommitTime, LOC, FFC) ->
+local_commit(Partitions, TxId, SpeculaCommitTime, LOC, FFC) ->
     lists:foreach(fun(Partition) ->
 			riak_core_vnode_master:command(Partition,
-						       {pre_commit, TxId, SpeculaCommitTime, LOC, FFC},
+						       {local_commit, TxId, SpeculaCommitTime, LOC, FFC},
                                self(), ?CLOCKSI_MASTER)
             end, Partitions).
 
@@ -507,13 +507,13 @@ handle_command({prepare, TxId, WriteSet, RepMode, ProposedTs}, RawSender,
             end 
     end;
 
-handle_command({pre_commit, TxId, SpeculaCommitTime, LOC, FFC}, _Sender, State=#state{prepared_txs=PreparedTxs,
+handle_command({local_commit, TxId, SpeculaCommitTime, LOC, FFC}, _Sender, State=#state{prepared_txs=PreparedTxs,
         inmemory_store=InMemoryStore, dep_dict=DepDict, partition=Partition}) ->
     %lager:warning("Got specula commit for ~w", [TxId]),
     case ets:lookup(PreparedTxs, TxId) of
         [{TxId, Keys}] ->
             %repl_fsm:repl_prepare(Partition, prepared, TxId, RepMsg),
-            DepDict1 = local_cert_util:pre_commit(Keys, TxId, SpeculaCommitTime, InMemoryStore, PreparedTxs, DepDict, Partition, LOC, FFC, master),
+            DepDict1 = local_cert_util:local_commit(Keys, TxId, SpeculaCommitTime, InMemoryStore, PreparedTxs, DepDict, Partition, LOC, FFC, master),
             {noreply, State#state{dep_dict=DepDict1}};
         [] ->
             lager:error("Prepared record of ~w has disappeared!", [TxId]),

@@ -23,7 +23,7 @@
 -include("include/antidote.hrl").
 
 -export([prepare_for_master_part/5, ready_or_block/4, prepare_for_other_part/7, update_store/9, clean_abort_prepared/7, 
-            pre_commit/10, specula_read/4, insert_prepare/6, read_value/4, remote_read_value/4]).
+            local_commit/10, specula_read/4, insert_prepare/6, read_value/4, remote_read_value/4]).
 
 -define(SPECULA_THRESHOLD, 0).
 
@@ -203,7 +203,7 @@ update_store([Key|Rest], TxId, TxCommitTime, InMemoryStore, CommittedTxs, Prepar
             %lager:warning("~p Pending readers are ~p! Others are ~p", [TxId, PendingReaders, Others]),
             AllPendingReaders = lists:foldl(fun({_, _, _, _ , Readers}, CReaders) ->
                                        Readers++CReaders end, PendingReaders, Others), 
-            Value = case Type of pre_commit -> {_, _, V}=MValue, V; _ -> MValue end,
+            Value = case Type of local_commit -> {_, _, V}=MValue, V; _ -> MValue end,
             %case Others of
             %    [{FFTxId, _,FF,_,_}] ->%lager:warning("FFTxId is ~w, FF i~w, FirstPrepTime is ~w", [FFTxId, FF, _FirstPrepTime]), _FirstPrepTime = FF;
             %    _ -> ok
@@ -297,7 +297,7 @@ clean_abort_prepared(PreparedTxs, [Key | Rest], TxId, InMemoryStore, DepDict, Pa
                     true = ets:insert(PreparedTxs, {Key, LastReaderTime}),
                     clean_abort_prepared(PreparedTxs,Rest,TxId, InMemoryStore, DepDict, Partition, PartitionType);
                 [{HType, HTxId, HPTime, HValue, HReaders}|Others] ->
-                    RPrepNum = case Type of pre_commit -> PrepNum; _ -> PrepNum-1 end,
+                    RPrepNum = case Type of local_commit -> PrepNum; _ -> PrepNum-1 end,
                     true = ets:insert(PreparedTxs, {Key, {LastReaderTime, FirstPPTime, RPrepNum}, [{HType, HTxId, HPTime, 
                             HValue, HReaders}|Others]}),
                     clean_abort_prepared(PreparedTxs,Rest,TxId, InMemoryStore, DepDict, Partition, PartitionType)
@@ -338,7 +338,7 @@ deal_pending_records([{Type, TxId, PPTime, _Value, PendingReaders}|PWaiter]=List
                                 DepDict
                         end,
             case Type of
-                pre_commit ->
+                local_commit ->
                     deal_pending_records(PWaiter, Metadata, SCTime, NewDepDict, MyNode, PendingReaders++Readers, PartitionType, RemovePrepNum, RemoveDepType);
                 prepared ->
                     deal_pending_records(PWaiter, Metadata, SCTime, NewDepDict, MyNode, PendingReaders++Readers, PartitionType, RemovePrepNum+1, RemoveDepType)
@@ -482,10 +482,10 @@ unblock_prepare(TxId, DepDict, Partition, RemoveDepType) ->
 %reply(Sender, Result) ->
 %    riak_core_vnode:reply(Sender, Result).
 
-pre_commit([], _TxId, _SCTime, _InMemoryStore, _PreparedTxs, DepDict, _Partition, _, _, _PartitionType) ->
+local_commit([], _TxId, _SCTime, _InMemoryStore, _PreparedTxs, DepDict, _Partition, _, _, _PartitionType) ->
     %dict:update(commit_diff, fun({Diff, Cnt}) -> {Diff+SCTime-PrepareTime, Cnt+1} end, DepDict);
     DepDict;
-pre_commit([Key|Rest], TxId, SCTime, InMemoryStore, PreparedTxs, DepDict, Partition, LOC, FFC, PartitionType) ->
+local_commit([Key|Rest], TxId, SCTime, InMemoryStore, PreparedTxs, DepDict, Partition, LOC, FFC, PartitionType) ->
     MyNode = {Partition, node()},
    %lager:warning("Trying to insert key ~p with for ~p, specula commit time is ~p", [Key, TxId, SCTime]),
     case ets:lookup(PreparedTxs, Key) of
@@ -497,20 +497,20 @@ pre_commit([Key|Rest], TxId, SCTime, InMemoryStore, PreparedTxs, DepDict, Partit
             %                     F=LastPrepTime;
             %    _ -> ok
             %end,
-            {StillPend, ToPrev} = reply_pre_commit(PartitionType, PendingReaders, SCTime, {LOC, FFC, Value}, TxId),
+            {StillPend, ToPrev} = reply_local_commit(PartitionType, PendingReaders, SCTime, {LOC, FFC, Value}, TxId),
             case ToPrev of
                 [] ->
-                    ets:insert(PreparedTxs, [{Key, {LastReaderTime, LastPrepTime, PrepNum-1}, [{pre_commit, TxId, PrepareTime, 
+                    ets:insert(PreparedTxs, [{Key, {LastReaderTime, LastPrepTime, PrepNum-1}, [{local_commit, TxId, PrepareTime, 
                             {LOC, FFC, Value}, StillPend}|Deps] }]),
-                    pre_commit(Rest, TxId, SCTime, InMemoryStore, 
+                    local_commit(Rest, TxId, SCTime, InMemoryStore, 
                           PreparedTxs, DepDict, Partition, LOC, FFC, PartitionType);
                 _ ->
                     %% Let these readers read the previous guy...
                    %lager:warning("In multi read version, Key is ~w, Deps is ~w, ToPrev is ~w", [Key, Deps, ToPrev]),
                     AfterReadRecord = multi_read_version(Key, Deps, ToPrev, InMemoryStore),
-                    ets:insert(PreparedTxs, [{Key, {LastReaderTime, LastPrepTime, PrepNum-1}, [{pre_commit, TxId, PrepareTime, 
+                    ets:insert(PreparedTxs, [{Key, {LastReaderTime, LastPrepTime, PrepNum-1}, [{local_commit, TxId, PrepareTime, 
                             {LOC, FFC, Value}, StillPend}|AfterReadRecord] }]),
-                    pre_commit(Rest, TxId, SCTime, InMemoryStore, 
+                    local_commit(Rest, TxId, SCTime, InMemoryStore, 
                           PreparedTxs, DepDict, Partition, LOC, FFC, PartitionType)
             end;
         [{Key, Metadata, RecordList}] ->
@@ -522,34 +522,34 @@ pre_commit([Key|Rest], TxId, SCTime, InMemoryStore, PreparedTxs, DepDict, Partit
             case find_prepare_record(RecordList, TxId) of
                 [] -> 
                    %lager:warning("Did not find record! Record list is ~w", [RecordList]),
-                    pre_commit(Rest, TxId, SCTime, InMemoryStore, 
+                    local_commit(Rest, TxId, SCTime, InMemoryStore, 
                           PreparedTxs, DepDict, Partition, LOC, FFC, PartitionType);
                 {Prev, {TxId, TxPrepTime, TxSCValue, PendingReaders}, RestRecords} ->
                     {RemainRecords, Metadata1, _, AbortedReaders, DepDict1} = deal_pending_records(Prev, Metadata, SCTime, DepDict, MyNode, [], PartitionType, 1, convert_to_pd),
                    %lager:warning("Found record! Prev is ~w, Newmeta is ~w, RemainRecords is ~w", [Prev, Metadata1, RemainRecords]),
-                    {StillPend, ToPrev} = reply_pre_commit(PartitionType, PendingReaders++AbortedReaders, SCTime, {LOC, FFC, TxSCValue}, TxId),
+                    {StillPend, ToPrev} = reply_local_commit(PartitionType, PendingReaders++AbortedReaders, SCTime, {LOC, FFC, TxSCValue}, TxId),
                     AfterReadRecord = multi_read_version(Key, RestRecords, ToPrev, InMemoryStore),
                     true = TxPrepTime =< SCTime,
                     case AfterReadRecord of
                         [] ->
                             {LastReaderTime, TxPrepTime, NewPrepNum} = Metadata1,
-                            ets:insert(PreparedTxs, {Key, {LastReaderTime, SCTime, NewPrepNum}, RemainRecords++[{pre_commit, TxId, SCTime, {LOC, FFC, TxSCValue}, StillPend}]});
+                            ets:insert(PreparedTxs, {Key, {LastReaderTime, SCTime, NewPrepNum}, RemainRecords++[{local_commit, TxId, SCTime, {LOC, FFC, TxSCValue}, StillPend}]});
                         _ ->
-                            ets:insert(PreparedTxs, {Key, Metadata1, RemainRecords++[{pre_commit, TxId, SCTime, {LOC, FFC, TxSCValue}, StillPend}|AfterReadRecord]})
+                            ets:insert(PreparedTxs, {Key, Metadata1, RemainRecords++[{local_commit, TxId, SCTime, {LOC, FFC, TxSCValue}, StillPend}|AfterReadRecord]})
                     end,
-                    pre_commit(Rest, TxId, SCTime, InMemoryStore, PreparedTxs,
+                    local_commit(Rest, TxId, SCTime, InMemoryStore, PreparedTxs,
                         DepDict1, Partition, LOC, FFC, PartitionType)
                     %%% Just to expose more erros if possible
             end;
         R ->
             %% TODO: Need to fix this
             lager:error("The txn is actually aborted already ~w, ~w", [Key, R]),
-            pre_commit(Rest, TxId, SCTime, InMemoryStore, PreparedTxs,
+            local_commit(Rest, TxId, SCTime, InMemoryStore, PreparedTxs,
                 DepDict, Partition, LOC, FFC, PartitionType)
             %R = 2
     end.
 
-reply_pre_commit(PartitionType, PendingReaders, SCTime, MValue, PreparedTxId) ->
+reply_local_commit(PartitionType, PendingReaders, SCTime, MValue, PreparedTxId) ->
    %lager:warning("Replying specula commit: pendiing readers are ~w", [PendingReaders]),
     case PartitionType of
         cache ->
@@ -654,7 +654,7 @@ specula_read(TxId, Key, PreparedTxs, SenderInfo) ->
             case SnapshotTime >= PrepareTime of
                 true ->
                     %% Read current version
-                    case (Type == pre_commit) and sc_by_local(TxId) of
+                    case (Type == local_commit) and sc_by_local(TxId) of
                         true ->
                             {PLOC, PFFC, Value} = MValue,
                             case is_safe_read(PLOC, PFFC, PreparedTxId, TxId) of
@@ -721,23 +721,23 @@ delete_and_read(DeleteType, PreparedTxs, InMemoryStore, TxCommitTime, Key, DepDi
     ToRemovePrep = case Type of prepared -> 1; repl_prepare -> 1; _ -> 0 end,
     RemoveDepType = case DeleteType of 
                         commit ->
-                            case Type of pre_commit -> remove_pd; _ -> remove_ppd end;
+                            case Type of local_commit -> remove_pd; _ -> remove_ppd end;
                             %case Rest of 
-                            %    [] -> case Type of pre_commit -> remove_pd; _ -> remove_ppd end;
+                            %    [] -> case Type of local_commit -> remove_pd; _ -> remove_ppd end;
                             %    _ -> 
                             %end;
                         abort ->
                             case Rest of 
-                                [] -> case Type of pre_commit -> remove_pd; _ -> remove_ppd end;
+                                [] -> case Type of local_commit -> remove_pd; _ -> remove_ppd end;
                                 [{prepared, _, _, _, _}|_] -> not_remove;
                                 [{repl_prepare, _, _, _, _}|_] -> not_remove; 
-                                [{pre_commit, _, _, _, _}|_] ->
-                                    case Type of pre_commit -> not_remove; _ -> convert_to_pd end
+                                [{local_commit, _, _, _, _}|_] ->
+                                    case Type of local_commit -> not_remove; _ -> convert_to_pd end
                             end
                     end,
     {RemainPrev, Metadata1, LastPrepTime, AbortReaders, DepDict1} 
         = deal_pending_records(Prev, Metadata, TxCommitTime, DepDict, {Partition, node()}, [], PartitionType, ToRemovePrep, RemoveDepType),
-    Value = case Type of pre_commit -> {_, _, V} = MValue, V; _ -> MValue end, 
+    Value = case Type of local_commit -> {_, _, V} = MValue, V; _ -> MValue end, 
     ToPrev = case DeleteType of 
                 abort -> AbortReaders++PendingReaders; 
                 commit -> reply_to_all(PartitionType, AbortReaders++PendingReaders, TxCommitTime, Value)
@@ -782,7 +782,7 @@ read_appr_version(ReaderTxId, [{Type, SCTxId, SCTime, SCValue, SCPendingReaders}
             {not_ready, lists:reverse(Prev)++[{Type, SCTxId, SCTime, SCValue, [SenderInfo|SCPendingReaders]}|Rest]};
         repl_prepare ->
             {not_ready, lists:reverse(Prev)++[{Type, SCTxId, SCTime, SCValue, [SenderInfo|SCPendingReaders]}|Rest]};
-        pre_commit ->
+        local_commit ->
             case sc_by_local(ReaderTxId) of
                 true ->
                    %lager:warning("~p reads specula value ~p!", [SCTxId, SCValue]),
@@ -824,7 +824,7 @@ multi_read_version(Key, [], SenderInfos, InMemoryStore) ->
                         gen_server:reply(Sender, {ok, Value})
                   end, SenderInfos),
     [];
-multi_read_version(Key, [{pre_commit, SCTxId, SCTime, SCValue, SCPendingReaders}|Rest], SenderInfos, InMemoryStore) -> 
+multi_read_version(Key, [{local_commit, SCTxId, SCTime, SCValue, SCPendingReaders}|Rest], SenderInfos, InMemoryStore) -> 
     RemainReaders = lists:foldl(fun(Reader, Pend) ->
             {TxId, Sender} = case Reader of {RTxId, _, S} -> {RTxId, S}; {RTxId, S} -> {RTxId, S} end,
             case TxId#tx_id.snapshot_time >= SCTime of
@@ -841,7 +841,7 @@ multi_read_version(Key, [{pre_commit, SCTxId, SCTime, SCValue, SCPendingReaders}
                 false ->
                     [Reader|Pend] 
             end end, [], SenderInfos),
-    [{pre_commit, SCTxId, SCTime, SCValue, SCPendingReaders}|multi_read_version(Key, Rest, RemainReaders, InMemoryStore)];
+    [{local_commit, SCTxId, SCTime, SCValue, SCPendingReaders}|multi_read_version(Key, Rest, RemainReaders, InMemoryStore)];
 multi_read_version(_Key, [{Type, SCTxId, SCTime, SCValue, SCPendingReaders}|Rest], SenderInfos, _InMemoryStore) -> 
     [{Type, SCTxId, SCTime, SCValue, SenderInfos++SCPendingReaders}|Rest].
 
