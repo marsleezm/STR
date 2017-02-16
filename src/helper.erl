@@ -15,7 +15,7 @@
 %%
 %% -------------------------------------------------------------------
 %% @doc: A helper class that implements some functions for debugging or
-%% statistical functions.
+%% statistical purpose.
 
 -module(helper).
 

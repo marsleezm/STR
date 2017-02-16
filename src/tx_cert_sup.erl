@@ -17,6 +17,9 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc The supervisor of long-live transaction coordinators in the node.
+%% It also implementes functionalities for debugging and auxiliery purpose,
+%% such as loading the datastores or tracing blocked transaction. 
 
 -module(tx_cert_sup).
 
@@ -26,13 +29,36 @@
 
 -export([start_link/0]).
 
--export([init/1, certify/4, certify_update/6, get_stat/0, get_int_data/3, start_tx/3, single_read/3, clean_all_data/0, clean_data/1, 
-            load_local/3, start_read_tx/1, set_int_data/3, read/4, single_commit/4, append_values/4, load/2, trace/1, get_oldest/0,
-            get_oldest/1, get_all_size/0, get_size/1, read_all/0, read_all_nodes/0, 
-            get_all_oldest/0,  get_pid/1, get_pids/1, get_global_pid/1, get_hitcounters/0]).
+-export([init/1, 
+         certify/4,
+         certify_update/6,
+         get_stat/0,
+         get_int_data/3,
+         start_tx/3,
+         single_read/3,
+         clean_all_data/0,
+         clean_data/1, 
+         load_local/3,
+         start_read_tx/1,
+         set_int_data/3,
+         read/4,
+         single_commit/4,
+         append_values/4,
+         load/2,
+         get_oldest/0,
+         get_oldest/1,
+         get_all_size/0,
+         get_size/1,
+         read_all/0,
+         read_all_nodes/0, 
+         get_all_oldest/0,
+         get_hitcounters/0]).
 
 -define(READ_TIMEOUT, 30000).
 
+%%%===================================================================
+%%% API
+%%%===================================================================
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
@@ -49,20 +75,14 @@ append_values(Name, Node, KeyValues, CommitTime) ->
                     {append_values, Node, KeyValues, CommitTime}, 15000)
     end.
 
+%% @doc Send load request to all machines 
 load(Type, Param) ->
-    {_, PartList, _, _} =  hash_fun:get_hash_fun(), %gen_server:call({global, MyTxServer}, {get_hash_fun}),
-    lager:info("Got load request, part list is ~w", [PartList]),
+    {_, PartList, _, _} = hash_fun:get_hash_fun(),
     AllDcs = [N || {N, _} <- PartList],
     StartTime = os:timestamp(),
-    lists:foreach(fun(Node) ->
-                    lager:info("Asking ~p to load", [Node]),
-                    spawn(rpc, call, [Node, tx_cert_sup, load_local, [self(), Type, Param]])
+    lists:foreach(fun(Node) -> spawn(rpc, call, [Node, tx_cert_sup, load_local, [self(), Type, Param]])
                  end, AllDcs),
-    lager:info("Waiting for results..."),
-    lists:foreach(fun(_) ->
-                 receive done -> ok end,
-                lager:info("Received ack")
-                 end, AllDcs),
+    lists:foreach(fun(_) -> receive done -> ok end end, AllDcs),
     EndTime = os:timestamp(),
     lager:info("Totally finished in tx_cert_sup, used ~w secs!!!", [timer:now_diff(EndTime, StartTime)/1000000]).
 
@@ -72,10 +92,7 @@ load_local(Sender, Type, Param) ->
     receive done -> ok end,
     Sender ! done.
 
-trace(Num) ->
-    CertServer = list_to_atom(atom_to_list(node()) ++ "-cert-" ++ integer_to_list(Num)),
-    gen_server:cast(CertServer, {trace_pending}).
-
+%% @doc Start an update/read transaction
 start_tx(Name, Seq, Client) ->
     case is_integer(Name) of
         true ->
@@ -84,6 +101,7 @@ start_tx(Name, Seq, Client) ->
             gen_server:call(Name, {start_tx, Seq, Client})
     end.
 
+%% @doc Start a read-only transaction
 start_read_tx(Name) ->
     case is_integer(Name) of
         true ->
@@ -138,9 +156,9 @@ read(Name, TxId, Key, Node) ->
             gen_server:call(generate_module_name((Name-1) rem ?NUM_SUP + 1), {read, Key, TxId, Node}, ?READ_TIMEOUT);
         false ->
             gen_server:call(Name, {read, Key, TxId, Node}, ?READ_TIMEOUT)
-            %gen_server:call({global, Name}, {read, Key, TxId, Node}, ?READ_TIMEOUT)
     end.
 
+%% @doc Clean all data
 clean_all_data() ->
     Parts = hash_fun:get_partitions(),
     Set = lists:foldl(fun({_, N}, D) ->
@@ -160,38 +178,17 @@ clean_all_data() ->
 clean_data(Sender) ->
     SPL = lists:seq(1, ?NUM_SUP),
     MySelf = self(),
-
-    lager:info("~w created", [node()]),
     lists:foreach(fun(N) -> gen_server:cast(generate_module_name(N), {clean_data, MySelf}) end, SPL),
     lists:foreach(fun(_) -> receive cleaned -> ok end  end, SPL),
-    lager:info("Got reply from all tx servers"),
     DataRepls = repl_fsm_sup:generate_data_repl_serv(),
     lists:foreach(fun({N, _, _, _, _, _}) -> lager:info("Sending to ~w", [N]), data_repl_serv:clean_data(N,  MySelf)  end, DataRepls),
     lists:foreach(fun(_) ->  receive cleaned -> ok end  end, DataRepls),
-    lager:info("Got reply from all data_repls"),
     S = hash_fun:get_local_servers(),
     lists:foreach(fun(N) ->  master_vnode:clean_data(N,  MySelf)  end, S),
     lists:foreach(fun(_) ->  receive cleaned -> ok end  end, S),
-    lager:info("Got reply from all local_nodes"),
     gen_server:call(node(), {clean_data}),
     Sender ! cleaned.
 
-get_all_size() ->
-    Parts = hash_fun:get_partitions(),
-    Set = lists:foldl(fun({_, N}, D) ->
-                sets:add_element(N, D)
-                end, sets:new(), Parts),
-    AllNodes = sets:to_list(Set),
-    lager:warning("Send alreay"),
-    lists:foreach(fun(Node) ->
-                    spawn(rpc, call, [Node, tx_cert_sup, get_size, [self()]])
-    end, AllNodes),
-    lager:warning("Waiting"),
-    R = lists:foldl(fun(_, {PS, CS, DS, AllS}) ->
-                   receive {S1, S2, S3, S4} -> 
-                    {PS+S1, CS+S2, DS+S3, AllS+S4} 
-                   end end, {0,0,0,0}, AllNodes),
-    lager:warning("Final R is ~w", [R]).
 
 read_all_nodes() ->
     Parts = hash_fun:get_partitions(),
@@ -199,7 +196,6 @@ read_all_nodes() ->
                 sets:add_element(N, D)
                 end, sets:new(), Parts),
     AllNodes = sets:to_list(Set),
-    lager:warning("Send alreay"),
     lists:foreach(fun(Node) ->
                     spawn(rpc, call, [Node, tx_cert_sup, read_all, []])
     end, AllNodes).
@@ -218,34 +214,44 @@ read_all() ->
                     master_vnode:read_all(N)
                   end, MyParts).
 
+%% @doc Get the size of all tables in the node.
+get_all_size() ->
+    Parts = hash_fun:get_partitions(),
+    Set = lists:foldl(fun({_, N}, D) ->
+                sets:add_element(N, D)
+                end, sets:new(), Parts),
+    AllNodes = sets:to_list(Set),
+    lists:foreach(fun(Node) ->
+                    spawn(rpc, call, [Node, tx_cert_sup, get_size, [self()]])
+    end, AllNodes),
+    R = lists:foldl(fun(_, {PS, CS, DS, AllS}) ->
+                   receive {S1, S2, S3, S4} -> 
+                    {PS+S1, CS+S2, DS+S3, AllS+S4} 
+                   end end, {0,0,0,0}, AllNodes),
+    lager:warning("Final R is ~w", [R]).
+
 get_size(Sender) ->
-    lager:warning("Got request from ~w", [Sender]),
     ToReplicate = repl_fsm_sup:find_to_repl(),
     DataRepl = lists:foldl(fun(Node, Acc) ->
             ReplName = list_to_atom(atom_to_list(node())++"repl"++atom_to_list(Node)),
             [ReplName|Acc] end, [], ToReplicate),
-    lager:warning("Got all data repl"),
     Parts = hash_fun:get_partitions(),
-    lager:warning("Got all parts "),
     MyParts = [{Part, Node} || {Part, Node} <- Parts, Node == node()],
-    lager:warning("My parts are ~w, data repl is ~w ", [MyParts, DataRepl]),
     {PS, CS, DS, AllS} = 
         lists:foldl(fun(N, {S1, S2, S3, S4}) -> 
-                        lager:warning("Sending to ~w", [N]),
                         {DS1, DS2, DS3, DS4} = data_repl_serv:get_size(N),
-                        lager:warning("Got reply from ~w", [N]),
                         {S1+DS1, S2+DS2, S3+DS3, S4+DS4}
                     end, {0, 0, 0, 0}, DataRepl),
     {PS1, CS1, DS1, AllS1} = 
         lists:foldl(fun(N, {S1, S2, S3, S4}) -> 
-                        lager:warning("Sending to ~w", [N]),
                         {DS1, DS2, DS3, DS4} = master_vnode:get_size(N),
-                        lager:warning("Got reply from ~w", [N]),
                         {S1+DS1, S2+DS2, S3+DS3, S4+DS4}
                     end, {PS, CS, DS, AllS}, MyParts),
     lager:warning("PS is ~w, CS is ~w, DS is ~w, AllS is ~w", [PS1, CS1, DS1, AllS1]),
     Sender ! {PS1, CS1, DS1, AllS1}.
 
+%% @doc For debugging purpose, when transactions stuck, finds the oldest trasaction (according to 
+%% snapshot time) that is stuck.
 get_all_oldest() ->
     Parts = hash_fun:get_partitions(),
     Set = lists:foldl(fun({_, N}, D) ->
@@ -295,26 +301,31 @@ get_stat() ->
     lists:foldl(fun(N, Acc) ->
             Res = gen_server:call(generate_module_name(N), {get_stat}),
             lager:info("Get stat from ~w is ~p", [N, Res]),
-            %AllZeros = lists:duplicate(7, 0),
             add_two(Res, Acc, [])
             end, lists:duplicate(7,0), SPL).
-    %LocalServ = hash_fun:get_local_servers(),
-    %PRead = lists:foldl(fun(S, Acc) ->
-    %                    Num = helper:num_specula_read(S), Num+Acc
-    %                    end, 0, LocalServ), 
-    %Lists = antidote_config:get(to_repl),
-    %[LocalRepList] = [LocalReps || {Node, LocalReps} <- Lists, Node == node()],
-    %LocalRepNames = [list_to_atom(atom_to_list(node())++"repl"++atom_to_list(L))  || L <- LocalRepList ],
-    %{DSpeculaRead, DTotalRead} = lists:foldl(fun(S, {Acc1, Acc2}) ->
-    %                    {Num1, Num2} = data_repl_serv:num_specula_read(S), {Num1+Acc1, Num2+Acc2}
-    %                    end, {0, 0}, LocalRepNames), 
-    %lager:info("Data replica specula read is ~w, Data replica read is ~w", [DSpeculaRead, DTotalRead]),
-    %{CacheSpeculaRead, CacheAttemptRead} = cache_serv:num_specula_read(),
-    %RealCnt = max(1, Cnt),
-    %{ListA, ListB} = lists:split(7, OtherResult),
-    %L1 = ListA ++ [PRead, DSpeculaRead, DTotalRead, CacheSpeculaRead, CacheAttemptRead],
-    %Avg = lists:map(fun(E) -> E div RealCnt end, ListB),
-    %ListA ++ Avg.    
+
+get_hitcounters() ->
+    SPL = lists:seq(1, ?NUM_SUP),
+    R = lists:foldl(fun(N, HT) ->
+            case gen_server:call(generate_module_name(N), {get_hitcounter}) of 
+                Num -> HT+Num 
+            end end, 0, SPL),
+    lager:warning("Total hitcounter is ~w", [R]),
+    R.
+
+%% @doc Starts a number of long-live transaction coordinator.
+init([]) ->
+    Pool = [generate_supervisor_spec(N) || N <- lists:seq(1, ?NUM_SUP)],
+    {ok, {{one_for_one, 5, 10}, Pool}}.
+
+
+%%%===================================================================
+%%% Internal
+%%%===================================================================
+add_two([], [], R) ->
+    lists:reverse(R);
+add_two([H1|R1], [H2|R2], R) ->
+    add_two(R1, R2, [(H1+H2)|R]).
 
 generate_module_name(N) ->
     list_to_atom(atom_to_list(node()) ++ "-cert-" ++ integer_to_list((N-1) rem ?NUM_SUP + 1)).
@@ -331,41 +342,3 @@ generate_supervisor_spec(N) ->
              {i_tx_cert_server, start_link, [Module]},
               permanent, 5000, worker, [i_tx_cert_server]}
     end.
-
-get_pid(WorkerId) ->
-    case is_integer(WorkerId) of
-        true -> whereis(generate_module_name(WorkerId));
-        false -> whereis(WorkerId)
-    end.
-
-get_hitcounters() ->
-    SPL = lists:seq(1, ?NUM_SUP),
-    R = lists:foldl(fun(N, HT) ->
-            case gen_server:call(generate_module_name(N), {get_hitcounter}) of 
-                Num -> HT+Num 
-            end end, 0, SPL),
-    lager:warning("Total hitcounter is ~w", [R]),
-    R.
-    
-
-get_pids(Names) ->
-    AllPids = lists:foldl(fun(WorkerId, Acc) ->
-                case is_integer(WorkerId) of
-                    true -> [whereis(generate_module_name(WorkerId))|Acc];
-                    false -> [whereis(WorkerId)|Acc]
-                end
-                end, [], Names),
-    lists:reverse(AllPids).
-
-get_global_pid(Name) ->
-    gen_server:call({global, Name}, {get_pid}).
-
-%% @doc Starts the coordinator of a ClockSI interactive transaction.
-init([]) ->
-    Pool = [generate_supervisor_spec(N) || N <- lists:seq(1, ?NUM_SUP)],
-    {ok, {{one_for_one, 5, 10}, Pool}}.
-
-add_two([], [], R) ->
-    lists:reverse(R);
-add_two([H1|R1], [H2|R2], R) ->
-    add_two(R1, R2, [(H1+H2)|R]).

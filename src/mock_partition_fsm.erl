@@ -18,11 +18,11 @@
 %%
 %% -------------------------------------------------------------------
 %% @doc A mocked file that emulates the behavior of several antidote 
-%%      components which relies on riak-core backend, e.g. 
-%%      master_vnode, dc_utilities and log_utilities. For simplicity,
-%%      the reply of some functions depend on the key being updated.
-%%      The detailed usage can be checked within each function, which is
-%%      self-explanatory.
+%% components which relies on riak-core backend, e.g. 
+%% master_vnode, dc_utilities and log_utilities. For simplicity,
+%% the reply of some functions depend on the key being updated.
+%% The detailed usage can be checked within each function, which is
+%% self-explanatory.
 
 -module(mock_partition_fsm).
 

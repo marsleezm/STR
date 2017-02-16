@@ -13,27 +13,29 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc The master replica of a partition. Each master partition recieves
+%% prepare request for transactions. After successfully preparing a 
+%% transaction, it replies the prepare timestamp to the transaction 
+%% coordinator and also replicates the prepare request to its slave replicas. 
+%%
 -module(master_vnode).
 -behaviour(riak_core_vnode).
 
 -include("antidote.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--define(NUM_VERSION, 44440).
+-define(NUM_VERSION, 40).
 -define(SPECULA_THRESHOLD, 0).
 
+%% API
 -export([start_vnode/1,
 	    internal_read/3,
         debug_read/3,
 	    relay_read/5,
         remote_read/4,
-        abort_others/5,
         get_size/1,
-        %set_prepared/5,
         get_table/1,
         clean_data/2,
-        async_send_msg/3,
-
         local_commit/5,
         set_debug/2,
         do_reply/2,
@@ -45,15 +47,14 @@
         append_values/4,
         abort/2,
         read_all/1,
-
         init/1,
         terminate/2,
         handle_command/3,
         is_empty/1,
         delete/1]).
 
--export([
-         handle_handoff_command/3,
+%% Callbacks.
+-export([handle_handoff_command/3,
          handoff_starting/2,
          handoff_cancelled/1,
          handoff_finished/2,
@@ -65,17 +66,6 @@
 
 -ignore_xref([start_vnode/1]).
 
-%%---------------------------------------------------------------------
-%% @doc Data Type: state
-%%      where:
-%%          partition: the partition that the vnode is responsible for.
-%%          prepared_txs: a list of prepared transactions.
-%%          committed_tx: a list of committed transactions.
-%%          downstream_set: a list of the downstream operations that the
-%%              transactions generate.
-%%          write_set: a list of the write sets that the transactions
-%%              generate.
-%%----------------------------------------------------------------------
 -record(state, {partition :: non_neg_integer(),
                 prepared_txs :: cache_id(),
                 committed_txs :: cache_id(),
@@ -84,20 +74,7 @@
                 if_specula :: boolean(),
                 inmemory_store :: cache_id(),
                 dep_dict :: dict(),
-                %l_abort_dict :: dict(),
-                %r_abort_dict :: dict(),
-                %Statistics
-                %max_ts :: non_neg_integer(),
                 debug = false :: boolean()
-                %total_time :: non_neg_integer(),
-                %prepare_count :: non_neg_integer(),
-		        %relay_read :: {non_neg_integer(), non_neg_integer()},
-                %num_specula_read :: non_neg_integer(),
-                %num_aborted :: non_neg_integer(),
-                %num_blocked :: non_neg_integer(),
-                %num_cert_fail :: non_neg_integer(),
-                %blocked_time :: non_neg_integer(),
-                %num_committed :: non_neg_integer()
                 }).
 
 %%%===================================================================
@@ -122,7 +99,6 @@ get_table(Node) ->
                                    {get_table},
                                    ?CLOCKSI_MASTER, infinity).
 
-%% @doc Sends a read request to the Node that is responsible for the Key
 internal_read(Node, Key, TxId) ->
     riak_core_vnode_master:sync_command(Node,
                                    {internal_read, Key, TxId},
@@ -158,11 +134,9 @@ remote_read(Node, Key, TxId, Reader) ->
                                    {remote_read, Key, TxId, Reader}, self(),
                                    ?CLOCKSI_MASTER).
 
-%% @doc Sends a prepare request to a Node involved in a tx identified by TxId
 prepare(Updates, TxId, Type) ->
     ProposeTime = TxId#tx_id.snapshot_time+1,
     lists:foldl(fun({Node, WriteSet}, {Partitions, NumPartitions}) ->
-        %lager:warning("Sending prepare to ~w", [Node]),
         riak_core_vnode_master:command(Node,
                            {prepare, TxId, WriteSet, Type, ProposeTime},
                            self(),
@@ -206,7 +180,6 @@ append_values(Node, KeyValues, CommitTime, _ToReply) ->
                                    {append_values, KeyValues, CommitTime},
                                    ?CLOCKSI_MASTER, infinity).
 
-%% @doc Sends a commit request to a Node involved in a tx identified by TxId
 commit(UpdatedParts, TxId, CommitTime, LOC) ->
     lists:foreach(fun(Node) ->
 			riak_core_vnode_master:command(Node,
@@ -215,7 +188,6 @@ commit(UpdatedParts, TxId, CommitTime, LOC) ->
 						       ?CLOCKSI_MASTER)
 		end, UpdatedParts).
 
-%% @doc Sends a commit request to a Node involved in a tx identified by TxId
 abort(UpdatedParts, TxId) ->
     lists:foreach(fun(Node) ->
 			riak_core_vnode_master:command(Node,
@@ -232,10 +204,7 @@ init([Partition]) ->
     CommittedTxs = tx_utilities:open_public_table(committed),
     InMemoryStore = tx_utilities:open_public_table(inmemory_store),
     DepDict = dict:new(),
-    %DepDict1 = dict:store(success_wait, 0, DepDict),
     DepDict1 = dict:store(commit_diff, {0,0}, DepDict),
-    %DepDict3 = dict:store(fucked_by_commit, {0,0}, DepDict2),
-    %DepDict4 = dict:store(fucked_by_badprep, {0,0}, DepDict3),
     IfReplicate = antidote_config:get(do_repl), 
     IfSpecula = antidote_config:get(do_specula), 
     _ = case IfReplicate of
@@ -244,30 +213,16 @@ init([Partition]) ->
                     false ->
                         ok
                 end,
-    %LD = dict:new(),
-    %RD = dict:new(),
     {ok, #state{partition=Partition,
                 committed_txs=CommittedTxs,
                 prepared_txs=PreparedTxs,
-		        %relay_read={0,0},
-                %l_abort_dict=LD,
-                %r_abort_dict=RD,
                 if_replicate = IfReplicate,
                 if_specula = IfSpecula,
                 inmemory_store=InMemoryStore,
                 dep_dict = DepDict1
-                %total_time = 0, 
-                %prepare_count = 0, 
-                %num_aborted = 0,
-                %num_blocked = 0,
-                %blocked_time = 0,
-                %num_specula_read = 0,
-                %num_cert_fail = 0,
-                %num_committed = 0
                 }}.
 
 handle_command({set_debug, Debug},_Sender,SD0=#state{partition=_Partition}) ->
-    %lager:info("~w: Setting debug to be ~w", [Partition, Debug]),
     {reply, ok, SD0#state{debug=Debug}};
 
 handle_command({get_table}, _Sender, SD0=#state{inmemory_store=InMemoryStore}) ->
@@ -288,18 +243,17 @@ handle_command({clean_data, Sender}, _Sender, SD0=#state{inmemory_store=InMemory
     {noreply, SD0#state{partition=Partition,
                 dep_dict = DepDict1}};
 
-handle_command({relay_read_stat},_Sender,SD0) -> %=#state{relay_read=RelayRead}) ->
-    %R = helper:handle_relay_read_stat(RelayRead),
+handle_command({relay_read_stat},_Sender,SD0) -> 
     {reply, 0, SD0};
 
-handle_command({num_specula_read},_Sender,SD0) -> %=#state{num_specula_read=NumSpeculaRead}) ->
+handle_command({num_specula_read},_Sender,SD0) ->
     {reply, 0, SD0};
 
 handle_command({check_key_record, Key, Type},_Sender,SD0=#state{prepared_txs=PreparedTxs, committed_txs=CommittedTxs}) ->
     R = helper:handle_check_key_record(Key, Type, PreparedTxs, CommittedTxs),
     {reply, R, SD0};
 
-handle_command({check_top_aborted, _},_Sender,SD0=#state{dep_dict=DepDict}) -> %=#state{l_abort_dict=LAbortDict, r_abort_dict=RAbortDict, dep_dict=DepDict}) ->
+handle_command({check_top_aborted, _},_Sender,SD0=#state{dep_dict=DepDict}) -> 
     R = helper:handle_check_top_aborted(DepDict),
     {reply, R, SD0};
 
@@ -328,11 +282,7 @@ handle_command({check_tables_ready},_Sender,SD0=#state{partition=Partition}) ->
     Result = helper:handle_check_tables_ready(Partition), 
     {reply, Result, SD0};
 
-handle_command({print_stat},_Sender,SD0=#state{partition=_Partition %num_aborted=NumAborted, blocked_time=BlockedTime,
-                    %num_committed=NumCommitted, num_cert_fail=NumCertFail, num_blocked=NumBlocked, total_time=A6, prepare_count=A7}) ->
-                        }) ->
-    %R = helper:handle_print_stat(Partition, NumAborted, BlockedTime,
-    %                NumCommitted, NumCertFail, NumBlocked, A6, A7),
+handle_command({print_stat},_Sender,SD0=#state{partition=_Partition}) ->
     {reply, ok, SD0};
     
 handle_command({check_prepared_empty},_Sender,SD0=#state{prepared_txs=PreparedTxs}) ->
@@ -344,7 +294,6 @@ handle_command({check_servers_ready},_Sender,SD0) ->
 
 handle_command({debug_read, Key, TxId}, Sender, SD0=#state{
             inmemory_store=InMemoryStore, partition=_Partition}) ->
-    %MaxTS1 = max(TxId#tx_id.snapshot_time, MaxTS), 
     local_cert_util:read_value(Key, TxId, Sender, InMemoryStore),
     {noreply, SD0};
 
@@ -352,7 +301,6 @@ handle_command({debug_read, Key, TxId}, Sender, SD0=#state{
 handle_command({internal_read, Key, TxId}, Sender, SD0=#state{%num_blocked=NumBlocked, 
             prepared_txs=PreparedTxs, inmemory_store=InMemoryStore, partition=_Partition}) ->
     {_, _, RealSender} = Sender,
-   %lager:info("Got read for ~w", [Key]),
     case local_cert_util:ready_or_block(TxId, Key, PreparedTxs, RealSender) of
         not_ready->
             %lager:info("Not ready for ~w", [Key]),
@@ -378,7 +326,8 @@ handle_command({read_all}, _Sender, SD0=#state{
             end, ets:tab2list(InMemoryStore)),
     {noreply, SD0};
 
-%% This read serves for all normal cases.
+%% @doc: Server the read to Key from transaction TxId. Reader is the process that
+%% sent the read request.
 handle_command({relay_read, Key, TxId, Reader, SpeculaRead}, _Sender, SD0=#state{
             prepared_txs=PreparedTxs, inmemory_store=InMemoryStore}) ->
     %lager:warning("Relaying read for ~p ~w", [Key, TxId]),
@@ -390,29 +339,25 @@ handle_command({relay_read, Key, TxId, Reader, SpeculaRead}, _Sender, SD0=#state
                     {noreply, SD0};
                 ready ->
                     local_cert_util:read_value(Key, TxId, Reader, InMemoryStore),
-                    {noreply, SD0}%i, relay_read={NumRR+1, AccRR+get_time_diff(T1, T2)}}}
+                    {noreply, SD0}
             end;
         true ->
             case local_cert_util:specula_read(TxId, Key, PreparedTxs, {TxId, Reader}) of
                 wait ->
-                    %lager:warning("Read wait!"),
                     {noreply, SD0};
                 not_ready->
-                    %lager:warning("Read blocked!"),
                     {noreply, SD0};
                 {specula, Value} ->
                     gen_server:reply(Reader, {ok, Value}), 
-    		        %T2 = os:timestamp(),
-                     %lager:warning("Specula read finished: ~w, ~p", [TxId, Key]),
                     {noreply, SD0};
-				        %relay_read={NumRR+1, AccRR+get_time_diff(T1, T2)}}};
                 ready ->
                     local_cert_util:read_value(Key, TxId, Reader, InMemoryStore),
-    		        %T2 = os:timestamp(),
                     {noreply, SD0}
             end
     end;
 
+%% @doc: Server remote read requests, i.e. read requests sent by transactions initialized from
+%% remote nodes.
 handle_command({remote_read, Key, TxId, Reader}, _Sender, SD0=#state{
             prepared_txs=PreparedTxs, inmemory_store=InMemoryStore}) ->
    %lager:warning("Remote read for ~p ~w", [Key, TxId]),
@@ -422,8 +367,9 @@ handle_command({remote_read, Key, TxId, Reader}, _Sender, SD0=#state{
             {noreply, SD0};
         ready ->
             local_cert_util:remote_read_value(Key, TxId, Reader, InMemoryStore),
-            {noreply, SD0}%i, relay_read={NumRR+1, AccRR+get_time_diff(T1, T2)}}}
+            {noreply, SD0}
     end;
+
 %% RepMode:
 %%  local: local certification, needs to send prepare to all slaves
 %%  remote, AvoidNode: remote cert, do not need to send prepare to AvoidNode
@@ -440,17 +386,11 @@ handle_command({prepare, TxId, WriteSet, RepMode, ProposedTs}, RawSender,
     Result = local_cert_util:prepare_for_master_part(TxId, WriteSet, CommittedTxs, PreparedTxs, ProposedTs),
     case Result of
         {ok, PrepareTime} ->
-            %UsedTime = tx_utilities:now_microsec() - PrepareTime,
             %lager:warning("~w: ~w certification check prepred with ~w, RepMode is ~w", [Partition, TxId, PrepareTime, RepMode]),
             case Debug of
                 false ->
-                    %case RepMode of local -> ok;
-                    %                _ ->
-                   %lager:warning("Here, trying to reply to coord of ~w", [TxId]),
-                    %lager:warning("Master prepared for ~w at ~w", [TxId, Partition]),
                     PendingRecord = {Sender, RepMode, WriteSet, PrepareTime},
                     repl_fsm:repl_prepare(Partition, prepared, TxId, PendingRecord),
-                    %end,
                     gen_server:cast(Sender, {prepared, TxId, PrepareTime, {node(), self()}}),
                     {noreply, State};
                 true ->
@@ -480,7 +420,6 @@ handle_command({prepare, TxId, WriteSet, RepMode, ProposedTs}, RawSender,
                     {noreply, State#state{dep_dict=NewDepDict}}
             end;
         {error, write_conflict} ->
-    %DepDict1 = dict:store(success_wait, 0, DepDict),
             %lager:warning("~w: ~w cerfify abort", [Partition, TxId]),
             case Debug of
                 false ->
@@ -498,12 +437,12 @@ handle_command({prepare, TxId, WriteSet, RepMode, ProposedTs}, RawSender,
             end 
     end;
 
+%% @doc: Local commit a transaction.
 handle_command({local_commit, TxId, SpeculaCommitTime, LOC, FFC}, _Sender, State=#state{prepared_txs=PreparedTxs,
         inmemory_store=InMemoryStore, dep_dict=DepDict, partition=Partition}) ->
     %lager:warning("Got specula commit for ~w", [TxId]),
     case ets:lookup(PreparedTxs, TxId) of
         [{TxId, Keys}] ->
-            %repl_fsm:repl_prepare(Partition, prepared, TxId, RepMsg),
             DepDict1 = local_cert_util:local_commit(Keys, TxId, SpeculaCommitTime, InMemoryStore, PreparedTxs, DepDict, Partition, LOC, FFC, master),
             {noreply, State#state{dep_dict=DepDict1}};
         [] ->
@@ -530,23 +469,18 @@ handle_command({append_values, KeyValues, CommitTime}, _Sender,
                State = #state{committed_txs=CommittedTxs,
                               inmemory_store=InMemoryStore
                               }) ->
-     %lager:info("Got msg from ~p", [ToReply]),
     lists:foreach(fun({Key, Value}) ->
             ets:insert(CommittedTxs, {Key, CommitTime}),
             true = ets:insert(InMemoryStore, {Key, [{CommitTime, Value}]})
             end, KeyValues),
-     %lager:info("Sending msg back to ~p", [ToReply]),
-    %gen_fsm:reply(ToReply, {ok, {committed, CommitTime}}),
     {reply, {ok, committed}, State};
 
 handle_command({commit, TxId, LOC, TxCommitTime}, _Sender,
                #state{partition=Partition,
                       committed_txs=CommittedTxs,
-                      %if_replicate=IfReplicate,
                       prepared_txs=PreparedTxs,
                       inmemory_store=InMemoryStore,
                       dep_dict = DepDict,
-                      %num_committed=NumCommitted,
                       if_specula=IfSpecula
                       } = State) ->
     %lager:warning("~w: Got commit req for ~w with ~w", [Partition, TxId, TxCommitTime]),
@@ -623,16 +557,6 @@ terminate(_Reason, #state{prepared_txs=PreparedTxs, committed_txs=CommittedTxs,
 %%%===================================================================
 %%% Internal Functions
 %%%===================================================================
-async_send_msg(Delay, Msg, To) ->
-    timer:sleep(Delay),
-    riak_core_vnode_master:command(To, Msg, To, ?CLOCKSI_MASTER).
-
-%set_prepared(_PreparedTxs,[],_TxId,_Time, KeySet) ->
-%    KeySet;
-%set_prepared(PreparedTxs,[{Key, Value} | Rest],TxId,Time, KeySet) ->
-%    true = ets:insert(PreparedTxs, {Key, {TxId, Time, Value, [], []}}),
-%    set_prepared(PreparedTxs,Rest,TxId,Time, [Key|KeySet]).
-
 commit(TxId, LOC, TxCommitTime, CommittedTxs, PreparedTxs, InMemoryStore, DepDict, Partition, IfSpecula)->
     %lager:warning("Before commit ~w", [TxId]),
     case ets:lookup(PreparedTxs, TxId) of
@@ -646,53 +570,6 @@ commit(TxId, LOC, TxCommitTime, CommittedTxs, PreparedTxs, InMemoryStore, DepDic
             true = ets:delete(PreparedTxs, TxId),
             {ok, committed, DepDict1};
         [] ->
-            lager:error("Prepared record of ~w has disappeared!", [TxId]),
+            %lager:error("Prepared record of ~w has disappeared!", [TxId]),
             error
-    end.
-
-%% @doc clean_and_notify:
-%%      This function is used for cleanning the state a transaction
-%%      stores in the vnode while it is being procesed. Once a
-%%      transaction commits or aborts, it is necessary to clean the 
-%%      prepared record of a transaction T. There are three possibility
-%%      when trying to clean a record:
-%%      1. The record is prepared by T (with T's TxId).
-%%          If T is being committed, this is the normal. If T is being 
-%%          aborted, it means T successfully prepared here, but got 
-%%          aborted somewhere else.
-%%          In both cases, we should remove the record.
-%%      2. The record is empty.
-%%          This can only happen when T is being aborted. What can only
-%%          only happen is as follows: when T tried to prepare, someone
-%%          else has already prepared, which caused T to abort. Then 
-%%          before the partition receives the abort message of T, the
-%%          prepared transaction gets processed and the prepared record
-%%          is removed.
-%%          In this case, we don't need to do anything.
-%%      3. The record is prepared by another transaction M.
-%%          This can only happen when T is being aborted. We can not
-%%          remove M's prepare record, so we should not do anything
-%%          either. 
-%%
-
-
-
-abort_others(_, [], DepDict, _MyNode, Readers) ->
-    {DepDict, [], Readers};
-abort_others(PPTime, [{_Type, TxId, _PTime, _Value, PendingReaders}|Rest]=NonAborted, DepDict, MyNode, Readers) ->
-    case PPTime > TxId#tx_id.snapshot_time of
-        true ->
-            case dict:find(TxId, DepDict) of
-                {ok, {_, _, Sender, _}} ->
-                    NewDepDict = dict:erase(TxId, DepDict),
-                    gen_server:cast(Sender, {aborted, TxId, MyNode}),
-                   %lager:warning("Aborting ~w, because PPTime ~w is larger", [TxId, PPTime]),
-                    abort([MyNode], TxId),
-                    abort_others(PPTime, Rest, NewDepDict, MyNode, PendingReaders++Readers);
-                error ->
-                   %lager:warning("~w aborted already", [TxId]),
-                    abort_others(PPTime, Rest, DepDict, MyNode, PendingReaders ++ Readers)
-            end;
-        false ->
-            {DepDict, NonAborted, Readers}
     end.

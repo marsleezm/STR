@@ -17,6 +17,8 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc The supervisor of repl_fsm, data_repl_serv and cache_serv. 
+%%
 
 -module(repl_fsm_sup).
 -behavior(supervisor).

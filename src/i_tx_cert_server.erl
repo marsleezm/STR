@@ -18,11 +18,11 @@
 %%
 %% -------------------------------------------------------------------
 %% @doc The transaction coordinator for non-speculative transactions.
-%%      A transaction coordinator is a long-lived process. It receives
-%%      client requrests to start a transaction, and then after
-%%      transaction execution, it receives transaction's write-set and
-%%      coordinates transaction's 2PC. The coordinator can simultaneously
-%%      coordinate for multiple transactions. 
+%% A transaction coordinator is a long-lived process. It receives
+%% client requrests to start a transaction, and then after
+%% transaction execution, it receives transaction's write-set and
+%% coordinates transaction's 2PC. The coordinator can simultaneously
+%% coordinate for multiple transactions. 
 
 -module(i_tx_cert_server).
 

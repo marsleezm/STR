@@ -1,8 +1,6 @@
 %% -------------------------------------------------------------------
 %%
-%% basho_bench: Benchmarking Suite
-%%
-%% Copyright (c) 2009-2010 Basho Techonologies
+%% Copyright (c) 2014 SyncFree Consortium.  All Rights Reserved.
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,6 +17,8 @@
 %% under the License.
 %%
 %% -------------------------------------------------------------------
+%% @doc The tool to load rubis at each node. 
+%%
 -module(rubis_load).
 
 -export([load/1, thread_load/4]).
@@ -36,8 +36,7 @@ load(_) ->
     random:seed(now()), %now()),
     %% Choose the node using our ID as a modulus
 
-    {_, PartList, ReplList, _} =  hash_fun:get_hash_fun(), %gen_server:call({global, MyTxServer}, {get_hash_fun}),
-    %lager:info("Part list is ~w, Replist is ~w", [PartList, ReplList]),
+    {_, PartList, ReplList, _} =  hash_fun:get_hash_fun(),
 
     %% Generate kinda hash function and distrbution
     AllNodes = [N || {N, _} <- PartList],
@@ -49,7 +48,6 @@ load(_) ->
     HashLength = length(FullPartList),
     MyReps = lists:map(fun(Index) ->  Name = lists:nth(Index, AllNodes),  {Index, {rep, get_rep_name(MyNode, Name)}} end, MyRepIds),
     DcId = index(MyNode, AllNodes),
-    %NumNodes = length(AllNodes),
 
     %% Delete table
     lager:info("TargetNode is ~p, DcId is ~w, My Replica Ids are ~w",[MyNode, DcId, MyReps]),
@@ -73,7 +71,6 @@ load(_) ->
     %% Add commit time 
     Part1 = get_partition("COMMIT_TIME", FullPartList, HashLength),
     {ok, COMMIT_TIME} = master_vnode:internal_read(Part1, "COMMIT_TIME", tx_utilities:create_tx_id(0)),
-    %lager:info("Got commit, is ~w", [COMMIT_TIME]),
     ets:insert(load_info, {"COMMIT_TIME", COMMIT_TIME}),
 
     ets:insert(load_info, {active_items, 0}),
@@ -85,7 +82,6 @@ load(_) ->
     MyTables = lists:foldl(fun(P, Acc) ->  Tab = master_vnode:get_table(P), Acc++[Tab] end, [], L),
     populate_commons(MyTables, MyNode, PartList, ToPopulateParts),
     lists:foreach(fun({Id, Server}) -> 
-        lager:info("Spawning for dc ~w", [Id]),
         Tables = case Server of 
                             server -> 
                                     {_, L} = lists:nth(DcId, PartList),
@@ -375,29 +371,6 @@ put_to_node(Tabs, _DcId, _PartList, Key, Value) ->
             ets:insert(Tabs, {Key, [{CommitTime, Value}]})
     end.
 
-%defer_put(DcId, PartList, Key, Value, WriteSet) ->
-%    {_, L} = lists:nth(DcId, PartList),
-%    Index = crypto:bytes_to_integer(erlang:md5(Key)) rem length(L) + 1,
-%    dict:append(Index, {Key, Value}, WriteSet).
-
-%multi_put(TxServer, DcId, PartList, WriteSet) ->
-%    {_, L} = lists:nth(DcId, PartList%),
-%    DictList = dict:to_list(WriteSet),
-%    [{"COMMIT_TIME", CommitTime}] = ets:lookup(load_info, "COMMIT_TIME"),
-%    lists:foreach(fun({Index, KeyValues}) ->
-%            Part = lists:nth(Index, L),    
-%            put(TxServer, Part, KeyValues, CommitTime)
-%            end, DictList).              
-
-%put(TxServer, Part, KeyValues, CommitTime) ->
-%    %lager:info("Single Puting [~p, ~p] to ~w", [Key, Value, Part]),
-%    case TxServer of
-%        server ->
-%            {ok, _} = master_vnode:append_values(Part, KeyValues, CommitTime, self());
-%        {rep, S} ->
-%            ok = data_repl_serv:append_values(S, KeyValues, CommitTime)
-%    end.
-
 index(Elem, L) ->
     index(Elem, L, 1).
 
@@ -409,7 +382,6 @@ index(E, [_|L], N) ->
     index(E, L, N+1).
 
 get_indexes(PL, List) ->
-    %lager:info("Trying to get index: PL ~w, List ~w", [PL, List]),
     [index(X, List) || X <- PL ].
 
 get_rep_name(Target, Rep) ->
